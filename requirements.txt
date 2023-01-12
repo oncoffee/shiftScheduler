@@ -1,3 +1,4 @@
 gurobipy
 pandas
-matplotlib
+numpy
+black
