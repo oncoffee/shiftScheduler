@@ -6,5 +6,6 @@
 + maximum of number of shifts
 + simultaneous nad non-simultaneous scheduling 
 + ordering of jobs or shifts
++ scheduling based on employee availability
 
 
