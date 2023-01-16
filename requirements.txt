@@ -2,3 +2,5 @@ gurobipy
 pandas
 numpy
 black
+gspread
+pydantic
