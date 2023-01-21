@@ -34,22 +34,53 @@ class Store(BaseModel):
     end_time: str
 
 
+class EmployeeSchedule(BaseModel):
+    employee_name: str
+    day_of_week: str
+    availability: str
+
+class Employee(BaseModel):
+    employee_name: str
+    hourly_rate: float
+    minimum_hours: int
+    maximum_hours: int
+
+
 stores: list[Store] = [
     Store.parse_obj(pre_row_for_parsing(x))
     for x in book.worksheet("Store").get_all_records()
     if not x.get("Disabled")
 ]
 
+schedule: list[EmployeeSchedule] = [
+    EmployeeSchedule.parse_obj(pre_row_for_parsing(x))
+    for x in book.worksheet("EmployeeSchedule").get_all_records()
+    if not x.get("Disabled")
+]
+
+employee: list[Employee] =[
+    Employee.parse_obj(pre_row_for_parsing(x))
+    for x in book.worksheet("Employee").get_all_records()
+    if not x.get("Disabled")
+]
 # print("\nStores:")
 # pprint(stores)
 
-for s in stores:
-    store_name = s.store_name
-    day_of_week = s.day_of_week
-    start_time = parser.parse(s.start_time).time()
-    end_time = parser.parse(s.end_time).time()
 
-print(store_name)
-print(day_of_week)
-print(start_time)
-print(end_time)
+
+
+rates = {}
+min_hrs = {}
+max_hrs = {}
+
+for e in employee:
+    rates[e.employee_name] = e.hourly_rate
+    min_hrs[e.employee_name] = e.minimum_hours
+    max_hrs[e.employee_name] = e.maximum_hours
+
+if __name__ == '__main__':
+    print(store_name)
+    print(day_of_week)
+    print(store_start_time)
+    print(store_end_time)
+
