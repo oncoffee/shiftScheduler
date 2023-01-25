@@ -42,6 +42,7 @@ class EmployeeSchedule(BaseModel):
 class Employee(BaseModel):
     employee_name: str
     hourly_rate: float
+    minimum_hours_per_week: int
     minimum_hours: int
     maximum_hours: int
 
@@ -63,24 +64,19 @@ employee: list[Employee] =[
     for x in book.worksheet("Employee").get_all_records()
     if not x.get("Disabled")
 ]
+
 # print("\nStores:")
 # pprint(stores)
 
-
-
-
 rates = {}
+min_hrs_pr_wk = {}
 min_hrs = {}
 max_hrs = {}
 
 for e in employee:
     rates[e.employee_name] = e.hourly_rate
+    min_hrs_pr_wk[e.employee_name] = e.minimum_hours_per_week
     min_hrs[e.employee_name] = e.minimum_hours
     max_hrs[e.employee_name] = e.maximum_hours
 
-if __name__ == '__main__':
-    print(store_name)
-    print(day_of_week)
-    print(store_start_time)
-    print(store_end_time)
 
