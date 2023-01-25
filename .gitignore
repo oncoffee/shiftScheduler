@@ -1,0 +1,5 @@
+scheduler.lp
+gurobi.log
+.python-version
+__pycache__/*
+.idea/*
