@@ -5,6 +5,6 @@ load_dotenv()
 
 if __name__ == '__main__':
     uvicorn.run("app:app",
-                host="0.0.0.0",
-                port=9562,
+                host="192.168.1.228",
+                port=1900,
                 reload=True)
