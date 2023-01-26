@@ -19,4 +19,15 @@ async def run_ep(pass_key: str):
     if pass_key != "vero":
         raise HTTPException(422, "Invalid Credentials")
     main()
+    return "Model successfully ran :')"
+
+@app.get("/logs")
+def read_logs():
+    try:
+        with open("/home/swap/PycharmProjects/shiftScheduler/gurobi.log",
+                  "r") as logfile:
+            logs = logfile.read()
+            return logs
+    except FileNotFoundError:
+        return "Log file not found"
 

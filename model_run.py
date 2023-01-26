@@ -118,6 +118,7 @@ def main():
             name="shift_start_max",
         )
 
+        m.params.logfile = "gurobi.log"
 
         # Solving the solver
         m.optimize()
