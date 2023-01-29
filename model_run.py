@@ -3,9 +3,29 @@ import gurobipy as gp
 import pandas as pd
 from gurobipy import GRB
 import numpy as np
+import logging
 
 
 def main():
+    open('myapp.log', 'w').close()
+
+    # set up logging to file - see previous section for more details
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s %(levelname)-8s %(message)s',
+                        datefmt='%m-%d %H:%M',
+                        filename='myapp.log',
+                        filemode='w')
+
+    # define a Handler which writes INFO messages or higher to the sys.stderr
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    # set a format which is simpler for console use
+    formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
+    # tell the handler to use this format
+    console.setFormatter(formatter)
+    # add the handler to the root logger
+    logging.getLogger('').addHandler(console)
+
     hourly_rates = rates
     maximum_hours = 22
 
@@ -59,7 +79,7 @@ def main():
 
         # Create a new model
         m = gp.Model("shop_schedule_1")
-
+        m.setParam("LogToConsole", 0)
         # Create variables
         s = m.addVars(employees, timePeriods, vtype=GRB.BINARY, name="s")
         w = m.addVars(employees, timePeriods, lb=-1, ub=1, name="w")
@@ -118,7 +138,7 @@ def main():
             name="shift_start_max",
         )
 
-        m.params.logfile = "gurobi.log"
+        #m.params.logfile = "gurobi.log"
 
         # Solving the solver
         m.optimize()
@@ -155,9 +175,9 @@ def main():
         cols = df["period"].unique()
         df_wide = pd.pivot(df, index="employee", columns="period", values="status")
         df_wide = df_wide[cols]
-        print(f"\nSchedule for {day_of_week}:")
-        print(f"\n\tTotal Cost: ${m.objVal}\n")
-        print(df_wide)
+        logging.info(f"Schedule for {day_of_week}:")
+        logging.info(f"\tTotal Cost: ${m.objVal}\n")
+        logging.info(f"\n{df_wide}")
 
 
 if '__name__' == '__main__':

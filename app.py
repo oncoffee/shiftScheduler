@@ -24,7 +24,7 @@ async def run_ep(pass_key: str):
 @app.get("/logs")
 def read_logs():
     try:
-        with open("/home/swap/PycharmProjects/shiftScheduler/gurobi.log",
+        with open("/home/swap/PycharmProjects/shiftScheduler/myapp.log",
                   "r") as logfile:
             logs = logfile.read()
             return logs
