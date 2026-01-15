@@ -1,9 +1,0 @@
-gurobipy
-pandas
-numpy
-black
-gspread
-pydantic
-fastapi
-uvicorn
-python-dotenv

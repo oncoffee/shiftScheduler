@@ -1,5 +1,40 @@
+# Generated files
 scheduler.lp
 myapp.log
 .python-version
-__pycache__/*
-.idea/*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Virtual environments
+venv/
+.venv/
+
+# uv
+uv.lock
+
+# Environment and secrets
+.env
+*.env.local
+service_account.json
+
+# Frontend
+node_modules/
+dist/
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
