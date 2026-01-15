@@ -5,12 +5,16 @@ from dotenv import load_dotenv
 
 from model_run import main
 from data_import import stores, employee, schedule
+from schemas import WeeklyScheduleResult
 
 load_dotenv()
 
 SOLVER_PASS_KEY = os.getenv("SOLVER_PASS_KEY", "changeme")
 
 app = FastAPI(title="shiftScheduler")
+
+# In-memory cache for last schedule result
+_last_schedule_result: WeeklyScheduleResult | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,12 +25,20 @@ app.add_middleware(
 )
 
 
-@app.get("/solver/run")
-async def run_ep(pass_key: str):
+@app.get("/solver/run", response_model=WeeklyScheduleResult)
+async def run_ep(pass_key: str) -> WeeklyScheduleResult:
+    global _last_schedule_result
     if pass_key != SOLVER_PASS_KEY:
         raise HTTPException(status_code=422, detail="Invalid Credentials")
-    main()
-    return "Model successfully ran :')"
+    result = main()
+    _last_schedule_result = result
+    return result
+
+
+@app.get("/schedule/results")
+async def get_schedule_results() -> WeeklyScheduleResult | None:
+    """Get the last generated schedule results"""
+    return _last_schedule_result
 
 
 @app.get("/logs")

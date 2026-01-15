@@ -52,36 +52,55 @@ class Employee(BaseModel):
     maximum_hours: int
 
 
-stores: list[Store] = [
-    Store.parse_obj(pre_row_for_parsing(x))
-    for x in book.worksheet("Store").get_all_records()
-    if not x.get("Disabled")
-]
+def load_data():
+    """Load data from Google Sheets. Call this to refresh data."""
+    global stores, schedule, employee, rates, min_hrs_pr_wk, min_hrs, max_hrs
 
-schedule: list[EmployeeSchedule] = [
-    EmployeeSchedule.parse_obj(pre_row_for_parsing(x))
-    for x in book.worksheet("EmployeeSchedule").get_all_records()
-    if not x.get("Disabled")
-]
+    stores = [
+        Store.parse_obj(pre_row_for_parsing(x))
+        for x in book.worksheet("Store").get_all_records()
+        if not x.get("Disabled")
+    ]
 
-employee: list[Employee] =[
-    Employee.parse_obj(pre_row_for_parsing(x))
-    for x in book.worksheet("Employee").get_all_records()
-    if not x.get("Disabled")
-]
+    # Load enabled employees first
+    employee = [
+        Employee.parse_obj(pre_row_for_parsing(x))
+        for x in book.worksheet("Employee").get_all_records()
+        if not x.get("Disabled")
+    ]
 
-# print("\nStores:")
-# pprint(stores)
+    # Get set of enabled employee names
+    enabled_employees = {e.employee_name for e in employee}
 
+    # Filter schedule to only include enabled employees
+    schedule = [
+        EmployeeSchedule.parse_obj(pre_row_for_parsing(x))
+        for x in book.worksheet("EmployeeSchedule").get_all_records()
+        if not x.get("Disabled") and x.get("Employee name") in enabled_employees
+    ]
+
+    rates = {}
+    min_hrs_pr_wk = {}
+    min_hrs = {}
+    max_hrs = {}
+
+    for e in employee:
+        rates[e.employee_name] = e.hourly_rate
+        min_hrs_pr_wk[e.employee_name] = e.minimum_hours_per_week
+        min_hrs[e.employee_name] = e.minimum_hours
+        max_hrs[e.employee_name] = e.maximum_hours
+
+
+# Initialize on import
+stores: list[Store] = []
+schedule: list[EmployeeSchedule] = []
+employee: list[Employee] = []
 rates = {}
 min_hrs_pr_wk = {}
 min_hrs = {}
 max_hrs = {}
 
-for e in employee:
-    rates[e.employee_name] = e.hourly_rate
-    min_hrs_pr_wk[e.employee_name] = e.minimum_hours_per_week
-    min_hrs[e.employee_name] = e.minimum_hours
-    max_hrs[e.employee_name] = e.maximum_hours
+# Load initial data
+load_data()
 
 

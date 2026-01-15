@@ -1,3 +1,5 @@
+import type { WeeklyScheduleResult } from "@/types/schedule";
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 async function fetchApi<T>(
@@ -21,20 +23,24 @@ async function fetchApi<T>(
 }
 
 export const api = {
-  // Solver
+  // Solver - returns structured schedule result
   runSolver: (passKey: string) =>
-    fetchApi<string>(`/solver/run?pass_key=${passKey}`),
+    fetchApi<WeeklyScheduleResult>(`/solver/run?pass_key=${passKey}`),
+
+  // Get last schedule results (cached)
+  getScheduleResults: () =>
+    fetchApi<WeeklyScheduleResult | null>("/schedule/results"),
 
   // Logs
   getLogs: () => fetchApi<string>("/logs"),
 
-  // Employees (to be implemented in backend)
+  // Employees
   getEmployees: () => fetchApi<Employee[]>("/employees"),
 
-  // Stores (to be implemented in backend)
+  // Stores
   getStores: () => fetchApi<Store[]>("/stores"),
 
-  // Schedule (to be implemented in backend)
+  // Employee availability schedules
   getSchedules: () => fetchApi<Schedule[]>("/schedules"),
 };
 

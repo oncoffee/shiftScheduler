@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Users, Store, Calendar, Play, CheckCircle, XCircle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/api/client";
+import { TodayShiftsCard, ScheduleSummaryCard } from "@/components/schedule";
+import type { WeeklyScheduleResult } from "@/types/schedule";
 
 interface DashboardStats {
   employees: number;
@@ -16,20 +18,23 @@ export function Dashboard() {
   const [stats, setStats] = useState<DashboardStats>({ employees: 0, stores: 0, schedules: 0 });
   const [loading, setLoading] = useState(true);
   const [apiStatus, setApiStatus] = useState<"connected" | "disconnected">("disconnected");
+  const [scheduleResult, setScheduleResult] = useState<WeeklyScheduleResult | null>(null);
 
   useEffect(() => {
     async function fetchStats() {
       try {
-        const [employees, stores, schedules] = await Promise.all([
+        const [employees, stores, schedules, scheduleResults] = await Promise.all([
           api.getEmployees(),
           api.getStores(),
           api.getSchedules(),
+          api.getScheduleResults(),
         ]);
         setStats({
           employees: employees.length,
           stores: stores.length,
           schedules: schedules.length,
         });
+        setScheduleResult(scheduleResults);
         setApiStatus("connected");
       } catch {
         setApiStatus("disconnected");
@@ -107,16 +112,34 @@ export function Dashboard() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Recent Activity</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-muted-foreground text-sm">
-              No recent activity to display.
-            </p>
-          </CardContent>
-        </Card>
+        {scheduleResult ? (
+          <>
+            <TodayShiftsCard schedules={scheduleResult.schedules} />
+            <ScheduleSummaryCard
+              dailySummaries={scheduleResult.daily_summaries}
+              schedules={scheduleResult.schedules}
+              totalWeeklyCost={scheduleResult.total_weekly_cost}
+            />
+          </>
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle>Schedule Overview</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-muted-foreground text-sm">
+                No schedule generated yet.{" "}
+                <button
+                  onClick={() => navigate("/schedule")}
+                  className="text-primary underline hover:no-underline"
+                >
+                  Run the solver
+                </button>{" "}
+                to generate a schedule.
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardHeader>

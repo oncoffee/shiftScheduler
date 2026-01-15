@@ -60,12 +60,25 @@ def test_solver_run_rejects_invalid_pass_key(client):
 
 def test_solver_run_accepts_valid_pass_key(client, mock_dependencies):
     """Test that /solver/run accepts valid pass_key."""
+    from schemas import WeeklyScheduleResult
+
+    mock_result = WeeklyScheduleResult(
+        week_no=1,
+        store_name="Test Store",
+        generated_at="2024-01-15T10:00:00",
+        schedules=[],
+        daily_summaries=[],
+        total_weekly_cost=0.0,
+        status="optimal",
+    )
     with patch("app.main") as mock_main, patch("app.SOLVER_PASS_KEY", "testkey"):
-        mock_main.return_value = None
+        mock_main.return_value = mock_result
         response = client.get("/solver/run?pass_key=testkey")
 
         assert response.status_code == 200
-        assert "successfully" in response.text.lower()
+        data = response.json()
+        assert data["status"] == "optimal"
+        assert data["store_name"] == "Test Store"
         mock_main.assert_called_once()
 
 

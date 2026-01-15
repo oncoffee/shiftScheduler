@@ -1,15 +1,38 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Play, Loader2, CheckCircle, XCircle } from "lucide-react";
+import { Play, Loader2, CheckCircle, XCircle, RefreshCw } from "lucide-react";
 import { api } from "@/api/client";
+import { WeeklyCalendar } from "@/components/schedule";
+import type { WeeklyScheduleResult } from "@/types/schedule";
 
 type SolverStatus = "idle" | "running" | "success" | "error";
 
 export function Schedule() {
   const [status, setStatus] = useState<SolverStatus>("idle");
   const [message, setMessage] = useState<string>("");
+  const [scheduleResult, setScheduleResult] =
+    useState<WeeklyScheduleResult | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Load cached schedule on mount
+  useEffect(() => {
+    async function loadCachedSchedule() {
+      try {
+        const result = await api.getScheduleResults();
+        if (result) {
+          setScheduleResult(result);
+          setStatus("success");
+        }
+      } catch {
+        // No cached schedule, that's fine
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadCachedSchedule();
+  }, []);
 
   async function runSolver() {
     setStatus("running");
@@ -17,8 +40,9 @@ export function Schedule() {
 
     try {
       const result = await api.runSolver("vero");
+      setScheduleResult(result);
       setStatus("success");
-      setMessage(typeof result === "string" ? result : "Solver completed successfully!");
+      setMessage("Solver completed successfully!");
     } catch (err) {
       setStatus("error");
       setMessage(err instanceof Error ? err.message : "An error occurred");
@@ -40,8 +64,9 @@ export function Schedule() {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            The scheduler uses Gurobi optimization to generate the most cost-effective
-            employee schedule based on availability and store requirements.
+            The scheduler uses Gurobi optimization to generate the most
+            cost-effective employee schedule based on availability and store
+            requirements.
           </p>
 
           <div className="flex items-center gap-4">
@@ -93,14 +118,55 @@ export function Schedule() {
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Generated Schedule</CardTitle>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle>Generated Schedule</CardTitle>
+            {scheduleResult && (
+              <p className="text-sm text-muted-foreground mt-1">
+                Week {scheduleResult.week_no} - {scheduleResult.store_name} |
+                Generated: {new Date(scheduleResult.generated_at).toLocaleString()}
+              </p>
+            )}
+          </div>
+          {scheduleResult && (
+            <Button variant="outline" size="sm" onClick={runSolver}>
+              <RefreshCw className="h-4 w-4 mr-1" />
+              Regenerate
+            </Button>
+          )}
         </CardHeader>
         <CardContent>
-          <p className="text-muted-foreground text-sm">
-            Run the solver to generate a schedule. Results will be shown here and
-            logged to the Logs page.
-          </p>
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : scheduleResult ? (
+            <div className="space-y-4">
+              <div className="flex gap-4 text-sm">
+                <div className="px-3 py-2 bg-muted rounded-md">
+                  <span className="text-muted-foreground">Total Cost: </span>
+                  <span className="font-bold">
+                    ${scheduleResult.total_weekly_cost.toFixed(2)}
+                  </span>
+                </div>
+                <div className="px-3 py-2 bg-muted rounded-md">
+                  <span className="text-muted-foreground">Status: </span>
+                  <span className="font-medium capitalize">
+                    {scheduleResult.status}
+                  </span>
+                </div>
+              </div>
+              <WeeklyCalendar
+                schedules={scheduleResult.schedules}
+                dailySummaries={scheduleResult.daily_summaries}
+              />
+            </div>
+          ) : (
+            <p className="text-muted-foreground text-sm">
+              Run the solver to generate a schedule. Results will be shown here
+              and logged to the Logs page.
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>
