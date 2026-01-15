@@ -52,9 +52,16 @@ class Employee(BaseModel):
     maximum_hours: int
 
 
+class Config(BaseModel):
+    dummy_worker_cost: float = 100.0  # Cost per period for unfilled shifts
+    short_shift_penalty: float = 50.0  # Penalty per hour below minimum
+    min_shift_hours: float = 3.0  # Minimum shift length in hours
+    max_daily_hours: float = 11.0  # Maximum hours per employee per day
+
+
 def load_data():
     """Load data from Google Sheets. Call this to refresh data."""
-    global stores, schedule, employee, rates, min_hrs_pr_wk, min_hrs, max_hrs
+    global stores, schedule, employee, rates, min_hrs_pr_wk, min_hrs, max_hrs, config
 
     stores = [
         Store.parse_obj(pre_row_for_parsing(x))
@@ -79,6 +86,20 @@ def load_data():
         if not x.get("Disabled") and x.get("Employee name") in enabled_employees
     ]
 
+    # Load config from Config tab
+    try:
+        config_rows = book.worksheet("Config").get_all_records()
+        config_dict = {row.get("Setting"): row.get("Value") for row in config_rows if row.get("Setting")}
+        config = Config(
+            dummy_worker_cost=float(config_dict.get("dummy_worker_cost", 100)),
+            short_shift_penalty=float(config_dict.get("short_shift_penalty", 50)),
+            min_shift_hours=float(config_dict.get("min_shift_hours", 3)),
+            max_daily_hours=float(config_dict.get("max_daily_hours", 11)),
+        )
+    except Exception:
+        # If Config tab doesn't exist or has issues, use defaults
+        config = Config()
+
     rates = {}
     min_hrs_pr_wk = {}
     min_hrs = {}
@@ -95,6 +116,7 @@ def load_data():
 stores: list[Store] = []
 schedule: list[EmployeeSchedule] = []
 employee: list[Employee] = []
+config: Config = Config()
 rates = {}
 min_hrs_pr_wk = {}
 min_hrs = {}

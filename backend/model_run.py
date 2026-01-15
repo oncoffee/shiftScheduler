@@ -112,7 +112,8 @@ def main() -> WeeklyScheduleResult:
     logging.getLogger('').addHandler(console)
 
     hourly_rates = data_import.rates
-    maximum_hours = 22
+    # Convert max daily hours to periods (each period is 30 mins)
+    maximum_periods = int(data_import.config.max_daily_hours * 2)
 
     employee_min_hrs = data_import.min_hrs_pr_wk
 
@@ -170,9 +171,9 @@ def main() -> WeeklyScheduleResult:
         employee_availability = {col: store_df[col].tolist()
                                  for col in store_df[[emp for emp in employees]].columns}
 
-        # Cost penalties
-        DUMMY_WORKER_COST = 100  # High cost per period for unfilled shifts
-        SHORT_SHIFT_PENALTY = 50  # Penalty for working below minimum hours
+        # Cost penalties (from config)
+        DUMMY_WORKER_COST = data_import.config.dummy_worker_cost
+        SHORT_SHIFT_PENALTY = data_import.config.short_shift_penalty
 
         # Create a new model
         m = gp.Model("shop_schedule_1")
@@ -210,10 +211,10 @@ def main() -> WeeklyScheduleResult:
                 m.addConstr(s[b, t] <= avail[b, t], f"availability_constraint_for_{b}-{t}")
 
 
-        # Add constraint on maximum daily hours
+        # Add constraint on maximum daily hours (converted to periods)
         for b in employees:
             m.addConstr(
-                gp.quicksum([s[b, t] for t in timePeriods]) <= maximum_hours,
+                gp.quicksum([s[b, t] for t in timePeriods]) <= maximum_periods,
                 name=f"max_daily_hours_for_{b}",
             )
 
@@ -243,8 +244,8 @@ def main() -> WeeklyScheduleResult:
             name="shift_start_max",
         )
 
-        # Minimum shift length (soft constraint with penalty)
-        MIN_SHIFT_PERIODS = 6  # 3 hours
+        # Minimum shift length (soft constraint with penalty, from config)
+        MIN_SHIFT_PERIODS = int(data_import.config.min_shift_hours * 2)  # Convert hours to periods
 
         # Link 'works' variable and calculate short shift penalty
         for b in employees:
@@ -329,7 +330,7 @@ def main() -> WeeklyScheduleResult:
             df_wide, day_of_week, store_start_time, m.objVal,
             unfilled_periods=unfilled,
             dummy_worker_cost=day_dummy_cost,
-            min_shift_hours=MIN_SHIFT_PERIODS * 0.5,
+            min_shift_hours=data_import.config.min_shift_hours,
         )
         all_schedules.extend(day_schedules)
         daily_summaries.append(day_summary)

@@ -42,6 +42,21 @@ export const api = {
 
   // Employee availability schedules
   getSchedules: () => fetchApi<Schedule[]>("/schedules"),
+
+  // Config
+  getConfig: () => fetchApi<Config>("/config"),
+  updateConfig: (config: Partial<Config>) => {
+    const params = new URLSearchParams();
+    if (config.dummy_worker_cost !== undefined)
+      params.set("dummy_worker_cost", config.dummy_worker_cost.toString());
+    if (config.short_shift_penalty !== undefined)
+      params.set("short_shift_penalty", config.short_shift_penalty.toString());
+    if (config.min_shift_hours !== undefined)
+      params.set("min_shift_hours", config.min_shift_hours.toString());
+    if (config.max_daily_hours !== undefined)
+      params.set("max_daily_hours", config.max_daily_hours.toString());
+    return fetchApi<Config>(`/config?${params.toString()}`, { method: "POST" });
+  },
 };
 
 // Types
@@ -71,4 +86,11 @@ export interface Schedule {
   employee: string;
   day_of_week: string;
   periods: string[];
+}
+
+export interface Config {
+  dummy_worker_cost: number;
+  short_shift_penalty: number;
+  min_shift_hours: number;
+  max_daily_hours: number;
 }
