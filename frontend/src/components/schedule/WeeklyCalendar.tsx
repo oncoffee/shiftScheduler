@@ -25,7 +25,6 @@ const EMPLOYEE_COLORS = [
   "#D8B4FE", // Light Purple
 ];
 
-// Generate hour slots from 6 AM to 10 PM
 const HOUR_SLOTS = Array.from({ length: 17 }, (_, i) => {
   const hour = i + 6;
   const ampm = hour >= 12 ? "PM" : "AM";
@@ -38,7 +37,6 @@ interface WeeklyCalendarProps {
   dailySummaries: DayScheduleSummary[];
 }
 
-// Parse time string like "09:00" to hour decimal (9.0, 9.5 for 9:30)
 function parseTimeToHour(timeStr: string): number {
   const match = timeStr.match(/(\d{1,2}):(\d{2})/);
   if (match) {
@@ -49,7 +47,6 @@ function parseTimeToHour(timeStr: string): number {
   return 9;
 }
 
-// Format time for display
 function formatTime(timeStr: string): string {
   const hour = parseTimeToHour(timeStr);
   const h = Math.floor(hour);
@@ -76,7 +73,6 @@ export function WeeklyCalendar({
     [employees]
   );
 
-  // Get shifts for selected day, grouped by employee
   const shiftsByEmployee = useMemo(() => {
     const map = new Map<string, EmployeeDaySchedule | null>();
     employees.forEach((emp) => map.set(emp, null));
@@ -99,7 +95,6 @@ export function WeeklyCalendar({
   const totalCost = dailySummaries.reduce((sum, s) => sum + s.total_cost, 0);
   const hasUnfilled = daySummary && daySummary.unfilled_periods.length > 0;
 
-  // Merge consecutive unfilled periods with same worker count
   const mergedUnfilledPeriods = useMemo(() => {
     if (!daySummary || daySummary.unfilled_periods.length === 0) return [];
 
@@ -112,28 +107,23 @@ export function WeeklyCalendar({
 
     for (let i = 1; i < periods.length; i++) {
       const period = periods[i];
-      // Check if consecutive and same worker count
-      if (
-        period.period_index === periods[i - 1].period_index + 1 &&
-        period.workers_needed === current.workers_needed
-      ) {
-        // Extend current block
+      const isConsecutive = period.period_index === periods[i - 1].period_index + 1;
+      const sameWorkerCount = period.workers_needed === current.workers_needed;
+
+      if (isConsecutive && sameWorkerCount) {
         current.end_time = period.end_time;
       } else {
-        // Save current and start new block
         merged.push(current);
         current = { ...period };
       }
     }
-    merged.push(current); // Don't forget last block
+    merged.push(current);
 
     return merged;
   }, [daySummary]);
 
   const HOUR_HEIGHT = 60;
   const START_HOUR = 6;
-
-  // Calculate total columns (employees + unfilled column if needed)
   const totalColumns = employees.length + (hasUnfilled ? 1 : 0);
 
   const prevDay = () => setSelectedDayIndex((i) => (i === 0 ? 6 : i - 1));

@@ -3,45 +3,33 @@ import pandas as pd
 from datetime import timedelta, datetime
 from data_import import *
 
-def putting_store_time_in_df(dow, start, end):
-    df = pd.DataFrame(columns=['Time', 'Period'])
 
-    start_time = start
-    end_time = end
+def create_time_periods_df(start_time, end_time):
     interval = timedelta(minutes=30)
+    start_dt = datetime.combine(datetime.today(), start_time)
+    end_dt = datetime.combine(datetime.today(), end_time)
 
-    start_datetime = datetime.combine(datetime.today(), start_time)
-    end_datetime = datetime.combine(datetime.today(), end_time)
-
+    periods = []
+    current = start_dt
     period = 0
-
-    current_datetime = start_datetime
-    while current_datetime < end_datetime:
-        new_row = pd.DataFrame({'Time': current_datetime.time(), 'Period': period}, index=[0])
-        df = pd.concat([df, new_row], ignore_index=True)
-        current_datetime += interval
+    while current < end_dt:
+        periods.append({'Time': current.time(), 'Period': period})
+        current += interval
         period += 1
+
+    return pd.DataFrame(periods)
+
+
+def putting_store_time_in_df(dow, start, end):
+    df = create_time_periods_df(start, end)
     df['day_of_week'] = dow
     return df
 
-def creating_employee_df(employee_name, dow, start, end):
-    df = pd.DataFrame(columns=['Time', 'Period'])
 
+def creating_employee_df(employee_name, dow, start, end):
     start_time = parser.parse(start).time()
     end_time = parser.parse(end).time()
-    interval = timedelta(minutes=30)
-
-    start_datetime = datetime.combine(datetime.today(), start_time)
-    end_datetime = datetime.combine(datetime.today(), end_time)
-
-    period = 0
-
-    current_datetime = start_datetime
-    while current_datetime < end_datetime:
-        new_row = pd.DataFrame({'Time': current_datetime.time(), 'Period': period}, index=[0])
-        df = pd.concat([df, new_row], ignore_index=True)
-        current_datetime += interval
-        period += 1
+    df = create_time_periods_df(start_time, end_time)
     df[employee_name] = 1
     df['day_of_week'] = dow
     return df[['day_of_week', 'Time', employee_name]].copy()

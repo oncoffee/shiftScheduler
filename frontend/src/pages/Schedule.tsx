@@ -16,7 +16,6 @@ export function Schedule() {
     useState<WeeklyScheduleResult | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Load cached schedule on mount
   useEffect(() => {
     async function loadCachedSchedule() {
       try {
@@ -25,8 +24,8 @@ export function Schedule() {
           setScheduleResult(result);
           setStatus("success");
         }
-      } catch {
-        // No cached schedule, that's fine
+      } catch (e) {
+        void e;
       } finally {
         setLoading(false);
       }

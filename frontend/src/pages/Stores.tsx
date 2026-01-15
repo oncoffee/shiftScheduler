@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -10,25 +9,13 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { api, type Store } from "@/api/client";
+import { useAsyncData } from "@/hooks/useAsyncData";
 
 export function Stores() {
-  const [stores, setStores] = useState<Store[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    async function fetchStores() {
-      try {
-        const data = await api.getStores();
-        setStores(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to fetch stores");
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchStores();
-  }, []);
+  const { data: stores, loading, error } = useAsyncData<Store[]>(
+    api.getStores,
+    "Failed to fetch stores"
+  );
 
   return (
     <div className="space-y-8">
@@ -53,7 +40,7 @@ export function Stores() {
                 Make sure the backend API is running and has the /stores endpoint.
               </p>
             </div>
-          ) : stores.length === 0 ? (
+          ) : !stores || stores.length === 0 ? (
             <p className="text-muted-foreground">No store configurations found.</p>
           ) : (
             <Table>

@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -10,25 +9,13 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { api, type Employee } from "@/api/client";
+import { useAsyncData } from "@/hooks/useAsyncData";
 
 export function Employees() {
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    async function fetchEmployees() {
-      try {
-        const data = await api.getEmployees();
-        setEmployees(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to fetch employees");
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchEmployees();
-  }, []);
+  const { data: employees, loading, error } = useAsyncData<Employee[]>(
+    api.getEmployees,
+    "Failed to fetch employees"
+  );
 
   return (
     <div className="space-y-8">
@@ -53,7 +40,7 @@ export function Employees() {
                 Make sure the backend API is running and has the /employees endpoint.
               </p>
             </div>
-          ) : employees.length === 0 ? (
+          ) : !employees || employees.length === 0 ? (
             <p className="text-muted-foreground">No employees found.</p>
           ) : (
             <Table>

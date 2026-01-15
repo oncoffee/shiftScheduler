@@ -1,30 +1,14 @@
-import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RefreshCw } from "lucide-react";
 import { api } from "@/api/client";
+import { useAsyncData } from "@/hooks/useAsyncData";
 
 export function Logs() {
-  const [logs, setLogs] = useState<string>("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  async function fetchLogs() {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await api.getLogs();
-      setLogs(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch logs");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    fetchLogs();
-  }, []);
+  const { data: logs, loading, error, refetch } = useAsyncData<string>(
+    api.getLogs,
+    "Failed to fetch logs"
+  );
 
   return (
     <div className="space-y-8">
@@ -35,7 +19,7 @@ export function Logs() {
             View solver output and system logs
           </p>
         </div>
-        <Button variant="outline" onClick={fetchLogs} disabled={loading}>
+        <Button variant="outline" onClick={refetch} disabled={loading}>
           <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           Refresh
         </Button>

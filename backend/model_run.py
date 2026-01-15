@@ -88,31 +88,46 @@ def convert_schedule_to_structured(
     return employee_schedules, summary
 
 
-def main() -> WeeklyScheduleResult:
-    # Reload data from Google Sheets to pick up any changes
-    data_import.load_data()
-
+def setup_logging():
     open('myapp.log', 'w').close()
-
-    # set up logging to file - see previous section for more details
-    logging.basicConfig(level=logging.DEBUG,
-                        format='%(asctime)s %(levelname)-8s %(message)s',
-                        datefmt='%m-%d %H:%M',
-                        filename='myapp.log',
-                        filemode='w')
-
-    # define a Handler which writes INFO messages or higher to the sys.stderr
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s %(levelname)-8s %(message)s',
+        datefmt='%m-%d %H:%M',
+        filename='myapp.log',
+        filemode='w'
+    )
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
-    # set a format which is simpler for console use
-    formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
-    # tell the handler to use this format
-    console.setFormatter(formatter)
-    # add the handler to the root logger
+    console.setFormatter(logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s'))
     logging.getLogger('').addHandler(console)
 
+
+def get_minimum_workers(day_of_week: str) -> list[int]:
+    if day_of_week in ('Saturday', 'Sunday'):
+        return [2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+    return [2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+
+
+def extract_schedule_dataframe(model) -> pd.DataFrame:
+    var_data = [(v.VarName, v.X) for v in model.getVars() if v.VarName.startswith("s[")]
+    df = pd.DataFrame(var_data, columns=["varname", "status"])
+    df["name-period"] = df.varname.str[2:-1]
+    df["name-period"] = df["name-period"].str.strip("[]").str.replace('"', "").str.replace(" ", "").str.split(",")
+    df["employee"] = df["name-period"].apply(lambda x: x[0])
+    df["period"] = df["name-period"].apply(lambda x: x[1])
+    df = df[["employee", "period", "status"]].copy()
+    df["status"] = np.where(df["status"] == 1, "*", "-")
+    cols = df["period"].unique()
+    df_wide = pd.pivot(df, index="employee", columns="period", values="status")
+    return df_wide[cols]
+
+
+def main() -> WeeklyScheduleResult:
+    data_import.load_data()
+    setup_logging()
+
     hourly_rates = data_import.rates
-    # Convert max daily hours to periods (each period is 30 mins)
     maximum_periods = int(data_import.config.max_daily_hours * 2)
 
     employee_min_hrs = data_import.min_hrs_pr_wk
@@ -129,18 +144,7 @@ def main() -> WeeklyScheduleResult:
         week_no = s.week_no
         store_name = s.store_name
         day_of_week = s.day_of_week
-
-        if day_of_week in ('Saturday', 'Sunday'):
-            minimum_workers = [2, 2, 2, 2,
-                               3, 3, 3, 3, 3, 3, 3, 4,
-                               4, 4, 4, 3, 3, 3, 3, 3,
-                               3, 2, 2]
-        elif day_of_week in ('Monday', 'Tuesday', 'Wednesday',
-                             'Thursday', 'Friday'):
-            minimum_workers = [2, 2, 2, 2, 2, 3,
-                               3, 3, 3, 3, 4, 4, 4, 4,
-                               4, 4, 4, 3, 3, 3, 3, 3,
-                               3, 2, 2]
+        minimum_workers = get_minimum_workers(day_of_week)
 
         store_start_time = parser.parse(s.start_time).time()
         store_end_time = parser.parse(s.end_time).time()
@@ -161,7 +165,6 @@ def main() -> WeeklyScheduleResult:
                     how='left'
                 )
             store_df = store_df.replace(np.nan, 0)
-        #print(store_df)
 
         employees = [x for x in store_df.columns][3:]
         timePeriods = [x for x in store_df.Period]
@@ -171,107 +174,76 @@ def main() -> WeeklyScheduleResult:
         employee_availability = {col: store_df[col].tolist()
                                  for col in store_df[[emp for emp in employees]].columns}
 
-        # Cost penalties (from config)
         DUMMY_WORKER_COST = data_import.config.dummy_worker_cost
         SHORT_SHIFT_PENALTY = data_import.config.short_shift_penalty
+        MIN_SHIFT_PERIODS = int(data_import.config.min_shift_hours * 2)
 
-        # Create a new model
         m = gp.Model("shop_schedule_1")
         m.setParam("LogToConsole", 0)
-        # Create variables
-        s = m.addVars(employees, timePeriods, vtype=GRB.BINARY, name="s")
-        w = m.addVars(employees, timePeriods, lb=-1, ub=1, name="w")
-        v = m.addVars(employees, timePeriods, name="v")
+
+        scheduled = m.addVars(employees, timePeriods, vtype=GRB.BINARY, name="s")
+        shift_change = m.addVars(employees, timePeriods, lb=-1, ub=1, name="w")
+        shift_start = m.addVars(employees, timePeriods, name="v")
         avail = m.addVars(employees, timePeriods, vtype=GRB.BINARY, name="avail")
-        # Binary variable: does employee work at all today?
         works = m.addVars(employees, vtype=GRB.BINARY, name="works")
-        # Dummy workers to fill gaps (one per time period)
         dummy = m.addVars(timePeriods, vtype=GRB.INTEGER, lb=0, name="dummy")
-        # Short shift penalty variable (hours below minimum)
         short_shift_hours = m.addVars(employees, lb=0, name="short_shift")
 
-        # Set Objective: minimize labor cost + dummy worker penalties + short shift penalties
         m.setObjective(
-            gp.quicksum([(hourly_rates[b] * s[b, t]) for b in employees for t in timePeriods])
+            gp.quicksum([(hourly_rates[b] * scheduled[b, t]) for b in employees for t in timePeriods])
             + gp.quicksum([DUMMY_WORKER_COST * dummy[t] for t in timePeriods])
             + gp.quicksum([SHORT_SHIFT_PENALTY * short_shift_hours[b] for b in employees]),
             sense=GRB.MINIMIZE,
         )
 
-        # Ensure availability matches the data
         for b in employees:
             for t in timePeriods:
-                m.addConstr(
-                    avail[b, t] == employee_availability[b][t], f"availability_for_{b}-{t}"
-                )
+                m.addConstr(avail[b, t] == employee_availability[b][t], f"availability_for_{b}-{t}")
+                m.addConstr(scheduled[b, t] <= avail[b, t], f"availability_constraint_for_{b}-{t}")
 
-        # Constrain schedule based on availability
-        for b in employees:
-            for t in timePeriods:
-                m.addConstr(s[b, t] <= avail[b, t], f"availability_constraint_for_{b}-{t}")
-
-
-        # Add constraint on maximum daily hours (converted to periods)
         for b in employees:
             m.addConstr(
-                gp.quicksum([s[b, t] for t in timePeriods]) <= maximum_periods,
+                gp.quicksum([scheduled[b, t] for t in timePeriods]) <= maximum_periods,
                 name=f"max_daily_hours_for_{b}",
             )
 
-        # Add constraint on minimum hourly workers (real employees + dummy workers)
         for t in range(1, T):
             m.addConstr(
-                gp.quicksum([s[b, t] for b in employees]) + dummy[t] >= minimum_workers[t],
+                gp.quicksum([scheduled[b, t] for b in employees]) + dummy[t] >= minimum_workers[t],
                 name=f"min_workers_period_{t}",
             )
 
-        # Add constraint to count shifts
         m.addConstrs(
-            (w[b, t] == (s[(b, t)] - s[(b, t - 1)]) for b in employees for t in range(1, T)),
+            (shift_change[b, t] == (scheduled[(b, t)] - scheduled[(b, t - 1)]) for b in employees for t in range(1, T)),
             name="shift_changes",
         )
-
-        m.addConstrs((w[(b, 0)] == s[(b, 0)] for b in employees), name="shift_starts_init")
-
+        m.addConstrs((shift_change[(b, 0)] == scheduled[(b, 0)] for b in employees), name="shift_starts_init")
         m.addConstrs(
-            (v[(b, t)] == gp.max_(w[(b, t)], 0) for b in employees for t in range(1, T)),
+            (shift_start[(b, t)] == gp.max_(shift_change[(b, t)], 0) for b in employees for t in range(1, T)),
             name="shift_starts",
         )
-
-        # Add constraints to place maximum on shift starts
         m.addConstrs(
-            (gp.quicksum([v[b, t] for t in timePeriods]) <= 1 for b in employees),
+            (gp.quicksum([shift_start[b, t] for t in timePeriods]) <= 1 for b in employees),
             name="shift_start_max",
         )
 
-        # Minimum shift length (soft constraint with penalty, from config)
-        MIN_SHIFT_PERIODS = int(data_import.config.min_shift_hours * 2)  # Convert hours to periods
-
-        # Link 'works' variable and calculate short shift penalty
         for b in employees:
-            total_periods = gp.quicksum([s[b, t] for t in timePeriods])
-            # If any period is worked, works must be 1
+            total_periods = gp.quicksum([scheduled[b, t] for t in timePeriods])
             m.addConstr(total_periods <= T * works[b], name=f"works_upper_{b}")
             m.addConstr(total_periods >= works[b], name=f"works_lower_{b}")
-            # Soft constraint: penalize if working less than minimum
-            # short_shift_hours captures how many hours below minimum (in hours, not periods)
             m.addConstr(
                 short_shift_hours[b] >= (MIN_SHIFT_PERIODS * 0.5 * works[b]) - (total_periods * 0.5),
                 name=f"short_shift_penalty_{b}"
             )
 
-        #m.params.logfile = "gurobi.log"
-
-        # Solving the solver
         m.optimize()
         m.write("scheduler.lp")
 
-        # Extract dummy worker values (unfilled shifts)
         day_dummy_cost = 0
         unfilled = []
         for t_idx, t in enumerate(timePeriods):
             dummy_val = dummy[t].X
-            if dummy_val > 0.5:  # Has unfilled slots
+            if dummy_val > 0.5:
                 workers_needed = int(round(dummy_val))
                 day_dummy_cost += workers_needed * DUMMY_WORKER_COST
                 unfilled.append(UnfilledPeriod(
@@ -281,7 +253,6 @@ def main() -> WeeklyScheduleResult:
                     workers_needed=workers_needed,
                 ))
 
-        # Extract short shift penalties
         day_short_shift_penalty = 0
         for b in employees:
             penalty_val = short_shift_hours[b].X
@@ -291,31 +262,7 @@ def main() -> WeeklyScheduleResult:
         total_dummy_cost += day_dummy_cost
         total_short_shift_cost += day_short_shift_penalty
 
-        varname = []
-        status = []
-        for v in m.getVars():
-            varname.append(v.VarName)
-            status.append(v.X)
-        data = {"varname": varname, "status": status}
-        df = pd.DataFrame(data)
-        # Filter for schedule variables (s[...]) - not short_shift or other s-prefixed vars
-        df = df[df.varname.str.startswith("s[")]
-        df["name-period"] = df.varname.str[2:-1]  # Extract content between s[ and ]
-        df["name-period"] = df.apply(
-            lambda row: row["name-period"]
-            .strip("[]")
-            .replace('"', "")
-            .replace(" ", "")
-            .split(","),
-            axis=1,
-        )
-        df["employee"] = df["name-period"].apply(lambda x: x[0])
-        df["period"] = df["name-period"].apply(lambda x: x[1])
-        df = df[["employee", "period", "status"]].copy()
-        df["status"] = np.where(df["status"] == 1, "*", "-")
-        cols = df["period"].unique()
-        df_wide = pd.pivot(df, index="employee", columns="period", values="status")
-        df_wide = df_wide[cols]
+        df_wide = extract_schedule_dataframe(m)
 
         logging.info(f"Schedule for {day_of_week}:")
         logging.info(f"\tLabor Cost: ${m.objVal - day_dummy_cost - day_short_shift_penalty:.2f}")
@@ -325,7 +272,6 @@ def main() -> WeeklyScheduleResult:
             logging.warning(f"\tShort shift penalty: ${day_short_shift_penalty:.2f}")
         logging.info(f"\n{df_wide}")
 
-        # Convert to structured data
         day_schedules, day_summary = convert_schedule_to_structured(
             df_wide, day_of_week, store_start_time, m.objVal,
             unfilled_periods=unfilled,
