@@ -27,12 +27,14 @@ export function DraggableShift({
 }: DraggableShiftProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
-      id: `shift-${shift.employee_name}-${shift.day_of_week}`,
+      id: `shift-${shift.employee_name}-${shift.day_of_week}-${shift.shift_start}`,
       data: {
         type: "shift",
         shift,
         employeeName: shift.employee_name,
         dayOfWeek: shift.day_of_week,
+        shiftStart: shift.shift_start,
+        shiftEnd: shift.shift_end,
       },
       disabled,
     });

@@ -83,9 +83,11 @@ function ScheduleContent() {
       dayOfWeek: string,
       newStart: string,
       newEnd: string,
+      originalStart: string,
+      originalEnd: string,
       newEmployeeName?: string
     ) => {
-      updateLocalShift(employeeName, dayOfWeek, newStart, newEnd, newEmployeeName);
+      updateLocalShift(employeeName, dayOfWeek, newStart, newEnd, originalStart, originalEnd, newEmployeeName);
     },
     [updateLocalShift]
   );

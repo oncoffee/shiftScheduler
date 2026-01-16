@@ -31,6 +31,8 @@ interface ScheduleEditContextValue {
     dayOfWeek: string,
     newStart: string,
     newEnd: string,
+    originalStart: string,
+    originalEnd: string,
     newEmployeeName?: string
   ) => void;
   saveChanges: () => Promise<void>;
@@ -170,6 +172,8 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
       dayOfWeek: string,
       newStart: string,
       newEnd: string,
+      originalStart: string,
+      originalEnd: string,
       newEmployeeName?: string
     ) => {
       saveSnapshot();
@@ -178,7 +182,7 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
         if (newEmployeeName && newEmployeeName !== employeeName) {
           return prev.map((schedule) => {
             if (schedule.employee_name === employeeName && schedule.day_of_week === dayOfWeek) {
-              return clearShiftFromSchedule(schedule, newStart, newEnd);
+              return clearShiftFromSchedule(schedule, originalStart, originalEnd);
             }
             if (schedule.employee_name === newEmployeeName && schedule.day_of_week === dayOfWeek) {
               return addShiftToSchedule(schedule, newStart, newEnd);
@@ -190,7 +194,7 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
         return prev.map((schedule) => {
           if (schedule.employee_name === employeeName && schedule.day_of_week === dayOfWeek) {
             return addShiftToSchedule(
-              clearShiftFromSchedule(schedule, schedule.shift_start || newStart, schedule.shift_end || newEnd),
+              clearShiftFromSchedule(schedule, originalStart, originalEnd),
               newStart,
               newEnd
             );

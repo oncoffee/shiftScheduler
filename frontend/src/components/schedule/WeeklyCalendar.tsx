@@ -25,16 +25,16 @@ const DAYS_ORDER = [
 ];
 
 const EMPLOYEE_COLORS = [
-  "#93C5FD", // Light Blue
-  "#A5B4FC", // Light Indigo
-  "#C4B5FD", // Light Violet
-  "#F0ABFC", // Light Fuchsia
-  "#FDA4AF", // Light Rose
-  "#FCD34D", // Light Amber
-  "#86EFAC", // Light Green
-  "#5EEAD4", // Light Teal
-  "#7DD3FC", // Light Sky
-  "#D8B4FE", // Light Purple
+  "#93C5FD",
+  "#A5B4FC",
+  "#C4B5FD",
+  "#F0ABFC",
+  "#FDA4AF",
+  "#FCD34D",
+  "#86EFAC",
+  "#5EEAD4",
+  "#7DD3FC",
+  "#D8B4FE",
 ];
 
 const HOUR_SLOTS = Array.from({ length: 17 }, (_, i) => {
@@ -53,6 +53,8 @@ interface WeeklyCalendarProps {
     dayOfWeek: string,
     newStart: string,
     newEnd: string,
+    originalStart: string,
+    originalEnd: string,
     newEmployeeName?: string
   ) => void;
 }
@@ -65,6 +67,63 @@ function parseTimeToHour(timeStr: string): number {
     return hours + minutes / 60;
   }
   return 9;
+}
+
+interface ShiftBlock {
+  start_time: string;
+  end_time: string;
+  total_hours: number;
+  is_short_shift: boolean;
+}
+
+function getContiguousShiftBlocks(schedule: EmployeeDaySchedule): ShiftBlock[] {
+  const scheduledPeriods = schedule.periods
+    .filter((p) => p.scheduled)
+    .sort((a, b) => {
+      const aStart = parseTimeToHour(a.start_time);
+      const bStart = parseTimeToHour(b.start_time);
+      return aStart - bStart;
+    });
+
+  if (scheduledPeriods.length === 0) return [];
+
+  const blocks: ShiftBlock[] = [];
+  let currentBlock = {
+    start_time: scheduledPeriods[0].start_time,
+    end_time: scheduledPeriods[0].end_time,
+    periodCount: 1,
+  };
+
+  for (let i = 1; i < scheduledPeriods.length; i++) {
+    const period = scheduledPeriods[i];
+    if (period.start_time === currentBlock.end_time) {
+      currentBlock.end_time = period.end_time;
+      currentBlock.periodCount++;
+    } else {
+      const totalHours = currentBlock.periodCount * 0.5;
+      blocks.push({
+        start_time: currentBlock.start_time,
+        end_time: currentBlock.end_time,
+        total_hours: totalHours,
+        is_short_shift: totalHours > 0 && totalHours < 3,
+      });
+      currentBlock = {
+        start_time: period.start_time,
+        end_time: period.end_time,
+        periodCount: 1,
+      };
+    }
+  }
+
+  const totalHours = currentBlock.periodCount * 0.5;
+  blocks.push({
+    start_time: currentBlock.start_time,
+    end_time: currentBlock.end_time,
+    total_hours: totalHours,
+    is_short_shift: totalHours > 0 && totalHours < 3,
+  });
+
+  return blocks;
 }
 
 function formatTime(timeStr: string): string {
@@ -219,6 +278,8 @@ export function WeeklyCalendar({
 
       if (shiftData?.type === "shift" && activeShift && onShiftUpdate) {
         const { newStart, newEnd } = calculateNewTimes(activeShift, delta.y, "move");
+        const originalStart = activeShift.shift_start!;
+        const originalEnd = activeShift.shift_end!;
 
         const overData = over?.data.current as { type?: string; employeeName?: string } | undefined;
         const targetEmployee = overData?.type === "column" ? overData.employeeName : undefined;
@@ -231,6 +292,8 @@ export function WeeklyCalendar({
           activeShift.day_of_week,
           newStart,
           newEnd,
+          originalStart,
+          originalEnd,
           newEmployeeName
         );
       }
@@ -244,6 +307,8 @@ export function WeeklyCalendar({
   const handleResizeStart = useCallback(
     (shift: EmployeeDaySchedule, type: "resize-start" | "resize-end") => {
       let startY = 0;
+      const originalStart = shift.shift_start!;
+      const originalEnd = shift.shift_end!;
 
       const handleMouseMove = (e: MouseEvent) => {
         if (startY === 0) {
@@ -264,7 +329,9 @@ export function WeeklyCalendar({
           shift.employee_name,
           shift.day_of_week,
           newStart,
-          newEnd
+          newEnd,
+          originalStart,
+          originalEnd
         );
       };
 
@@ -276,7 +343,6 @@ export function WeeklyCalendar({
 
   return (
     <div className="space-y-4">
-      {/* Day selector */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button
@@ -315,7 +381,6 @@ export function WeeklyCalendar({
         )}
       </div>
 
-      {/* Calendar grid */}
       <DndContext
         sensors={sensors}
         onDragStart={handleDragStart}
@@ -323,7 +388,6 @@ export function WeeklyCalendar({
         onDragEnd={handleDragEnd}
       >
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          {/* Header - Employee names + Unfilled column */}
           <div
             className="grid border-b border-gray-200 bg-gray-50"
             style={{ gridTemplateColumns: `70px repeat(${totalColumns}, minmax(100px, 1fr))` }}
@@ -353,12 +417,10 @@ export function WeeklyCalendar({
             )}
           </div>
 
-          {/* Time grid */}
           <div
             className="grid"
             style={{ gridTemplateColumns: `70px repeat(${totalColumns}, minmax(100px, 1fr))` }}
           >
-            {/* Time labels column */}
             <div className="border-r border-gray-100">
               {HOUR_SLOTS.map(({ hour, label }) => (
                 <div
@@ -370,11 +432,11 @@ export function WeeklyCalendar({
               ))}
             </div>
 
-            {/* Employee columns */}
             {employees.map((emp) => {
-              const shift = shiftsByEmployee.get(emp);
+              const schedule = shiftsByEmployee.get(emp);
               const color = employeeColorMap.get(emp)!;
               const isColumnOver = overColumn === emp && activeShift?.employee_name !== emp;
+              const blocks = schedule ? getContiguousShiftBlocks(schedule) : [];
 
               return (
                 <DroppableColumn
@@ -392,32 +454,40 @@ export function WeeklyCalendar({
                     />
                   ))}
 
-                  {shift && (
-                    <DraggableShift
-                      shift={shift}
-                      color={color}
-                      top={(parseTimeToHour(shift.shift_start!) - START_HOUR) * HOUR_HEIGHT}
-                      height={
-                        (parseTimeToHour(shift.shift_end!) -
-                          parseTimeToHour(shift.shift_start!)) *
-                        HOUR_HEIGHT
-                      }
-                      disabled={!isEditMode}
-                      onResizeStart={handleResizeStart}
-                      formatTime={formatTime}
-                    />
-                  )}
+                  {blocks.map((block) => {
+                    const blockShift: EmployeeDaySchedule = {
+                      ...schedule!,
+                      shift_start: block.start_time,
+                      shift_end: block.end_time,
+                      total_hours: block.total_hours,
+                      is_short_shift: block.is_short_shift,
+                    };
+                    return (
+                      <DraggableShift
+                        key={`${emp}-${block.start_time}`}
+                        shift={blockShift}
+                        color={color}
+                        top={(parseTimeToHour(block.start_time) - START_HOUR) * HOUR_HEIGHT}
+                        height={
+                          (parseTimeToHour(block.end_time) -
+                            parseTimeToHour(block.start_time)) *
+                          HOUR_HEIGHT
+                        }
+                        disabled={!isEditMode}
+                        onResizeStart={handleResizeStart}
+                        formatTime={formatTime}
+                      />
+                    );
+                  })}
                 </DroppableColumn>
               );
             })}
 
-            {/* Unfilled column */}
             {hasUnfilled && daySummary && (
               <div
                 className="relative border-l border-red-200 bg-red-50/30"
                 style={{ height: HOUR_SLOTS.length * HOUR_HEIGHT }}
               >
-                {/* Hour grid lines */}
                 {HOUR_SLOTS.map(({ hour }) => (
                   <div
                     key={hour}
@@ -426,7 +496,6 @@ export function WeeklyCalendar({
                   />
                 ))}
 
-                {/* Unfilled period blocks (merged) */}
                 {mergedUnfilledPeriods.map((period, idx) => {
                   const startHour = parseTimeToHour(period.start_time);
                   const endHour = parseTimeToHour(period.end_time);
@@ -470,7 +539,6 @@ export function WeeklyCalendar({
         </DragOverlay>
       </DndContext>
 
-      {/* Summary */}
       <div className="flex items-center justify-end text-sm">
         <span className="text-gray-400">Weekly Total</span>
         <span className="ml-2 text-xl font-bold text-gray-900">
