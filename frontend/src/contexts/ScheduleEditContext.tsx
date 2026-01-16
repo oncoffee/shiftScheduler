@@ -94,47 +94,73 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
     return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
   };
 
-  const applyShiftToSchedule = (
+  const clearShiftFromSchedule = (
     schedule: EmployeeDaySchedule,
-    shiftStart: string | null,
-    shiftEnd: string | null
+    shiftStart: string,
+    shiftEnd: string
   ): EmployeeDaySchedule => {
-    if (!shiftStart || !shiftEnd) {
-      const clearedPeriods = schedule.periods.map((p) => ({
-        ...p,
-        scheduled: false,
-      }));
-      return {
-        ...schedule,
-        periods: clearedPeriods,
-        total_hours: 0,
-        shift_start: null,
-        shift_end: null,
-        is_short_shift: false,
-      };
-    }
-
     const startMinutes = parseTimeToMinutes(shiftStart);
     const endMinutes = parseTimeToMinutes(shiftEnd);
 
     const updatedPeriods = schedule.periods.map((p) => {
       const periodStart = parseTimeToMinutes(p.start_time);
       const periodEnd = parseTimeToMinutes(p.end_time);
-      const scheduled = periodStart >= startMinutes && periodEnd <= endMinutes;
-      return { ...p, scheduled };
+      const inRange = periodStart >= startMinutes && periodEnd <= endMinutes;
+      return { ...p, scheduled: inRange ? false : p.scheduled };
     });
 
-    const scheduledCount = updatedPeriods.filter((p) => p.scheduled).length;
-    const totalHours = scheduledCount * 0.5;
-    const isShortShift = totalHours > 0 && totalHours < 3;
+    const scheduledPeriods = updatedPeriods.filter((p) => p.scheduled);
+    const totalHours = scheduledPeriods.length * 0.5;
+
+    let newStart: string | null = null;
+    let newEnd: string | null = null;
+    if (scheduledPeriods.length > 0) {
+      newStart = scheduledPeriods[0].start_time;
+      newEnd = scheduledPeriods[scheduledPeriods.length - 1].end_time;
+    }
 
     return {
       ...schedule,
       periods: updatedPeriods,
       total_hours: totalHours,
-      shift_start: totalHours > 0 ? shiftStart : null,
-      shift_end: totalHours > 0 ? shiftEnd : null,
-      is_short_shift: isShortShift,
+      shift_start: newStart,
+      shift_end: newEnd,
+      is_short_shift: totalHours > 0 && totalHours < 3,
+    };
+  };
+
+  const addShiftToSchedule = (
+    schedule: EmployeeDaySchedule,
+    shiftStart: string,
+    shiftEnd: string
+  ): EmployeeDaySchedule => {
+    const startMinutes = parseTimeToMinutes(shiftStart);
+    const endMinutes = parseTimeToMinutes(shiftEnd);
+
+    const updatedPeriods = schedule.periods.map((p) => {
+      const periodStart = parseTimeToMinutes(p.start_time);
+      const periodEnd = parseTimeToMinutes(p.end_time);
+      const inRange = periodStart >= startMinutes && periodEnd <= endMinutes;
+      return { ...p, scheduled: inRange ? true : p.scheduled };
+    });
+
+    const scheduledPeriods = updatedPeriods.filter((p) => p.scheduled);
+    const totalHours = scheduledPeriods.length * 0.5;
+
+    let newStart: string | null = null;
+    let newEnd: string | null = null;
+    if (scheduledPeriods.length > 0) {
+      newStart = scheduledPeriods[0].start_time;
+      newEnd = scheduledPeriods[scheduledPeriods.length - 1].end_time;
+    }
+
+    return {
+      ...schedule,
+      periods: updatedPeriods,
+      total_hours: totalHours,
+      shift_start: newStart,
+      shift_end: newEnd,
+      is_short_shift: totalHours > 0 && totalHours < 3,
     };
   };
 
@@ -150,25 +176,12 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
 
       setLocalSchedules((prev) => {
         if (newEmployeeName && newEmployeeName !== employeeName) {
-          const targetSchedule = prev.find(
-            (s) => s.employee_name === newEmployeeName && s.day_of_week === dayOfWeek
-          );
-
-          const sourceShift = { start: newStart, end: newEnd };
-          const targetShift = targetSchedule?.shift_start && targetSchedule?.shift_end
-            ? { start: targetSchedule.shift_start, end: targetSchedule.shift_end }
-            : null;
-
           return prev.map((schedule) => {
             if (schedule.employee_name === employeeName && schedule.day_of_week === dayOfWeek) {
-              return applyShiftToSchedule(
-                schedule,
-                targetShift?.start || null,
-                targetShift?.end || null
-              );
+              return clearShiftFromSchedule(schedule, newStart, newEnd);
             }
             if (schedule.employee_name === newEmployeeName && schedule.day_of_week === dayOfWeek) {
-              return applyShiftToSchedule(schedule, sourceShift.start, sourceShift.end);
+              return addShiftToSchedule(schedule, newStart, newEnd);
             }
             return schedule;
           });
@@ -176,13 +189,21 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
 
         return prev.map((schedule) => {
           if (schedule.employee_name === employeeName && schedule.day_of_week === dayOfWeek) {
-            return applyShiftToSchedule(schedule, newStart, newEnd);
+            return addShiftToSchedule(
+              clearShiftFromSchedule(schedule, schedule.shift_start || newStart, schedule.shift_end || newEnd),
+              newStart,
+              newEnd
+            );
           }
           return schedule;
         });
       });
 
-      const changes: ShiftEditRequest[] = [
+      setPendingChanges((prev) => [
+        ...prev.filter(
+          (c) =>
+            !(c.employee_name === employeeName && c.day_of_week === dayOfWeek)
+        ),
         {
           employee_name: employeeName,
           day_of_week: dayOfWeek,
@@ -190,14 +211,6 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
           new_shift_end: newEnd,
           new_employee_name: newEmployeeName,
         },
-      ];
-
-      setPendingChanges((prev) => [
-        ...prev.filter(
-          (c) =>
-            !(c.employee_name === employeeName && c.day_of_week === dayOfWeek)
-        ),
-        ...changes,
       ]);
     },
     [saveSnapshot]
