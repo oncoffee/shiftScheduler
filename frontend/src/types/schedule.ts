@@ -3,6 +3,7 @@ export interface ShiftPeriod {
   start_time: string;
   end_time: string;
   scheduled: boolean;
+  is_locked?: boolean;
 }
 
 export interface EmployeeDaySchedule {
@@ -13,6 +14,7 @@ export interface EmployeeDaySchedule {
   shift_start: string | null;
   shift_end: string | null;
   is_short_shift: boolean;
+  is_locked?: boolean;
 }
 
 export interface UnfilledPeriod {

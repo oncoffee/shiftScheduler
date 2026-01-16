@@ -173,6 +173,7 @@ async def validate_schedule_change(
     proposed_end: str,
     current_schedules: list[EmployeeDaySchedule],
     exclude_original: bool = True,
+    skip_availability_check: bool = False,
 ) -> tuple[bool, list[ValidationError], list[ValidationWarning]]:
     errors = []
     warnings = []
@@ -204,30 +205,31 @@ async def validate_schedule_change(
         ))
         return False, errors, warnings
 
-    employee = await EmployeeDoc.find_one(EmployeeDoc.employee_name == employee_name)
-    if employee:
-        day_availability = None
-        for avail in employee.availability:
-            if avail.day_of_week == day_of_week:
-                day_availability = avail
-                break
+    if not skip_availability_check:
+        employee = await EmployeeDoc.find_one(EmployeeDoc.employee_name == employee_name)
+        if employee:
+            day_availability = None
+            for avail in employee.availability:
+                if avail.day_of_week == day_of_week:
+                    day_availability = avail
+                    break
 
-        if day_availability:
-            avail_start = parse_time_to_minutes(day_availability.start_time)
-            avail_end = parse_time_to_minutes(day_availability.end_time)
+            if day_availability:
+                avail_start = parse_time_to_minutes(day_availability.start_time)
+                avail_end = parse_time_to_minutes(day_availability.end_time)
 
-            if start_minutes < avail_start or end_minutes > avail_end:
+                if start_minutes < avail_start or end_minutes > avail_end:
+                    errors.append(ValidationError(
+                        "OUTSIDE_AVAILABILITY",
+                        f"Shift is outside employee availability ({day_availability.start_time} - {day_availability.end_time})"
+                    ))
+                    return False, errors, warnings
+            else:
                 errors.append(ValidationError(
-                    "OUTSIDE_AVAILABILITY",
-                    f"Shift is outside employee availability ({day_availability.start_time} - {day_availability.end_time})"
+                    "NO_AVAILABILITY",
+                    f"Employee has no availability on {day_of_week}"
                 ))
                 return False, errors, warnings
-        else:
-            errors.append(ValidationError(
-                "NO_AVAILABILITY",
-                f"Employee has no availability on {day_of_week}"
-            ))
-            return False, errors, warnings
 
     if shift_hours < config["min_shift_hours"]:
         warnings.append(ValidationWarning(

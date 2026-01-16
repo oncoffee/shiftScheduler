@@ -58,6 +58,7 @@ class ShiftPeriodEmbed(BaseModel):
     start_time: str
     end_time: str
     scheduled: bool
+    is_locked: bool = False
 
 
 class Assignment(BaseModel):
@@ -67,6 +68,7 @@ class Assignment(BaseModel):
     shift_start: Optional[str] = None
     shift_end: Optional[str] = None
     is_short_shift: bool = False
+    is_locked: bool = False
     periods: list[ShiftPeriodEmbed] = []
 
 

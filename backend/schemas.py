@@ -7,6 +7,7 @@ class ShiftPeriod(BaseModel):
     start_time: str
     end_time: str
     scheduled: bool
+    is_locked: bool = False
 
 
 class EmployeeDaySchedule(BaseModel):
@@ -17,6 +18,7 @@ class EmployeeDaySchedule(BaseModel):
     shift_start: str | None
     shift_end: str | None
     is_short_shift: bool = False
+    is_locked: bool = False
 
 
 class UnfilledPeriod(BaseModel):
@@ -96,3 +98,14 @@ class BatchUpdateResponse(BaseModel):
     updated_schedule: WeeklyScheduleResult
     recalculated_cost: float
     failed_updates: list[dict] = []
+
+
+class ToggleLockRequest(BaseModel):
+    employee_name: str
+    day_of_week: str
+    is_locked: bool
+
+
+class ToggleLockResponse(BaseModel):
+    success: bool
+    updated_schedule: WeeklyScheduleResult
