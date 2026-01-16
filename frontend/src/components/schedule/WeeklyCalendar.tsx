@@ -57,6 +57,9 @@ interface WeeklyCalendarProps {
     originalEnd: string,
     newEmployeeName?: string
   ) => void;
+  onToggleLock?: (employeeName: string, dayOfWeek: string) => void;
+  onShiftClick?: (shift: EmployeeDaySchedule) => void;
+  onEmptyClick?: (employeeName: string, dayOfWeek: string, startTime?: string, endTime?: string) => void;
 }
 
 function parseTimeToHour(timeStr: string): number {
@@ -135,12 +138,57 @@ function formatTime(timeStr: string): string {
   return m > 0 ? `${displayH}:${m.toString().padStart(2, "0")} ${ampm}` : `${displayH} ${ampm}`;
 }
 
+const HOUR_HEIGHT = 60;
+const START_HOUR = 6;
+
+function pixelToTime(pixelY: number): string {
+  const hourOffset = pixelY / HOUR_HEIGHT;
+  const totalHour = START_HOUR + hourOffset;
+  const hours = Math.floor(totalHour);
+  const minutes = Math.round((totalHour - hours) * 2) * 30; // Snap to 30-min
+  const clampedHours = Math.max(6, Math.min(22, hours + (minutes >= 60 ? 1 : 0)));
+  const clampedMins = minutes >= 60 ? 0 : minutes;
+  return `${clampedHours.toString().padStart(2, "0")}:${clampedMins.toString().padStart(2, "0")}`;
+}
+
+interface SelectionPreviewProps {
+  startY: number;
+  endY: number;
+}
+
+function SelectionPreview({ startY, endY }: SelectionPreviewProps) {
+  const top = Math.min(startY, endY);
+  const height = Math.abs(endY - startY);
+  const startTime = pixelToTime(top);
+  const endTime = pixelToTime(top + height);
+
+  return (
+    <div
+      className="absolute left-2 right-2 rounded-lg border-2 border-dashed border-blue-400 bg-blue-200/50 pointer-events-none z-10"
+      style={{ top, height: Math.max(height, 4) }}
+    >
+      {height >= 20 && (
+        <div className="p-2 text-xs font-medium text-blue-900">
+          {formatTime(startTime)} - {formatTime(endTime)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface DroppableColumnProps {
   employeeName: string;
   isEditMode: boolean;
   height: number;
   isOver: boolean;
   children: React.ReactNode;
+  isSelecting: boolean;
+  selectionStartY: number | null;
+  selectionEndY: number | null;
+  selectingEmployee: string | null;
+  onSelectionStart: (y: number, employee: string) => void;
+  onSelectionMove: (y: number, maxHeight: number) => void;
+  onSelectionEnd: () => void;
 }
 
 function DroppableColumn({
@@ -149,21 +197,64 @@ function DroppableColumn({
   height,
   isOver,
   children,
+  isSelecting,
+  selectionStartY,
+  selectionEndY,
+  selectingEmployee,
+  onSelectionStart,
+  onSelectionMove,
+  onSelectionEnd,
 }: DroppableColumnProps) {
   const { setNodeRef } = useDroppable({
     id: `column-${employeeName}`,
     data: { type: "column", employeeName },
   });
 
+  const handleMouseDown = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("button") || target.closest("[data-shift-block]")) return;
+    if (!isEditMode) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    onSelectionStart(y, employeeName);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isSelecting || selectingEmployee !== employeeName) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    onSelectionMove(y, height);
+  };
+
+  const handleMouseUp = () => {
+    if (isSelecting && selectingEmployee === employeeName) {
+      onSelectionEnd();
+    }
+  };
+
+  const handleMouseLeave = () => {};
+
+  const isThisColumnSelecting = isSelecting && selectingEmployee === employeeName;
+
   return (
     <div
       ref={setNodeRef}
-      className={`relative border-l border-gray-100 transition-colors ${
-        isEditMode ? "bg-blue-50/20" : ""
+      className={`relative border-l border-gray-100 transition-colors select-none ${
+        isEditMode ? "bg-blue-50/20 cursor-crosshair hover:bg-blue-50/40" : ""
       } ${isOver ? "bg-green-100/50 ring-2 ring-green-400 ring-inset" : ""}`}
       style={{ height }}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseLeave}
     >
       {children}
+      {isThisColumnSelecting && selectionStartY !== null && selectionEndY !== null && (
+        <SelectionPreview
+          startY={selectionStartY}
+          endY={selectionEndY}
+        />
+      )}
     </div>
   );
 }
@@ -173,13 +264,21 @@ export function WeeklyCalendar({
   dailySummaries,
   isEditMode = false,
   onShiftUpdate,
+  onToggleLock,
+  onShiftClick,
+  onEmptyClick,
 }: WeeklyCalendarProps) {
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const selectedDay = DAYS_ORDER[selectedDayIndex];
   const [activeShift, setActiveShift] = useState<EmployeeDaySchedule | null>(null);
   const [overColumn, setOverColumn] = useState<string | null>(null);
 
-  const { calculateNewTimes, START_HOUR } = useScheduleEdit();
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [selectionStartY, setSelectionStartY] = useState<number | null>(null);
+  const [selectionEndY, setSelectionEndY] = useState<number | null>(null);
+  const [selectingEmployee, setSelectingEmployee] = useState<string | null>(null);
+
+  const { calculateNewTimes } = useScheduleEdit();
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -248,13 +347,49 @@ export function WeeklyCalendar({
     return merged;
   }, [daySummary]);
 
-  const HOUR_HEIGHT = 60;
   const totalColumns = employees.length + (hasUnfilled ? 1 : 0);
 
   const prevDay = () => setSelectedDayIndex((i) => (i === 0 ? 6 : i - 1));
   const nextDay = () => setSelectedDayIndex((i) => (i === 6 ? 0 : i + 1));
 
+  const handleSelectionStart = useCallback((y: number, employee: string) => {
+    setIsSelecting(true);
+    setSelectionStartY(y);
+    setSelectionEndY(y);
+    setSelectingEmployee(employee);
+  }, []);
+
+  const handleSelectionMove = useCallback((y: number, maxHeight: number) => {
+    if (!isSelecting) return;
+    const clampedY = Math.max(0, Math.min(y, maxHeight));
+    setSelectionEndY(clampedY);
+  }, [isSelecting]);
+
+  const handleSelectionEnd = useCallback(() => {
+    if (isSelecting && selectionStartY !== null && selectionEndY !== null && selectingEmployee) {
+      const startY = Math.min(selectionStartY, selectionEndY);
+      const endY = Math.max(selectionStartY, selectionEndY);
+
+      if (endY - startY >= HOUR_HEIGHT / 2) {
+        const startTime = pixelToTime(startY);
+        const endTime = pixelToTime(endY);
+        onEmptyClick?.(selectingEmployee, selectedDay, startTime, endTime);
+      } else {
+        onEmptyClick?.(selectingEmployee, selectedDay);
+      }
+    }
+    setIsSelecting(false);
+    setSelectionStartY(null);
+    setSelectionEndY(null);
+    setSelectingEmployee(null);
+  }, [isSelecting, selectionStartY, selectionEndY, selectingEmployee, selectedDay, onEmptyClick]);
+
   const handleDragStart = useCallback((event: DragStartEvent) => {
+    setIsSelecting(false);
+    setSelectionStartY(null);
+    setSelectionEndY(null);
+    setSelectingEmployee(null);
+
     const { active } = event;
     const shiftData = active.data.current;
     if (shiftData?.type === "shift") {
@@ -445,11 +580,18 @@ export function WeeklyCalendar({
                   isEditMode={isEditMode}
                   height={HOUR_SLOTS.length * HOUR_HEIGHT}
                   isOver={isColumnOver}
+                  isSelecting={isSelecting}
+                  selectionStartY={selectionStartY}
+                  selectionEndY={selectionEndY}
+                  selectingEmployee={selectingEmployee}
+                  onSelectionStart={handleSelectionStart}
+                  onSelectionMove={handleSelectionMove}
+                  onSelectionEnd={handleSelectionEnd}
                 >
                   {HOUR_SLOTS.map(({ hour }) => (
                     <div
                       key={hour}
-                      className="absolute w-full border-b border-gray-50"
+                      className="absolute w-full border-b border-gray-50 pointer-events-none"
                       style={{ top: (hour - START_HOUR + 1) * HOUR_HEIGHT }}
                     />
                   ))}
@@ -475,6 +617,12 @@ export function WeeklyCalendar({
                         }
                         disabled={!isEditMode}
                         onResizeStart={handleResizeStart}
+                        onToggleLock={
+                          onToggleLock
+                            ? (shift) => onToggleLock(shift.employee_name, shift.day_of_week)
+                            : undefined
+                        }
+                        onClick={onShiftClick}
                         formatTime={formatTime}
                       />
                     );

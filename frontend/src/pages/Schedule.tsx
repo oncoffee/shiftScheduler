@@ -1,15 +1,15 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Play, Loader2, CheckCircle, XCircle, RefreshCw, Edit3 } from "lucide-react";
+import { Play, Loader2, CheckCircle, XCircle, RefreshCw, Edit3, Plus } from "lucide-react";
 import { api } from "@/api/client";
-import { WeeklyCalendar, EditModeToolbar } from "@/components/schedule";
+import { WeeklyCalendar, EditModeToolbar, ShiftDetailModal, AddShiftModal } from "@/components/schedule";
 import {
   ScheduleEditProvider,
   useScheduleEditContext,
 } from "@/contexts/ScheduleEditContext";
-import type { WeeklyScheduleResult } from "@/types/schedule";
+import type { WeeklyScheduleResult, EmployeeDaySchedule } from "@/types/schedule";
 
 type SolverStatus = "idle" | "running" | "success" | "error";
 
@@ -20,13 +20,26 @@ function ScheduleContent() {
     useState<WeeklyScheduleResult | null>(null);
   const [scheduleId, setScheduleId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addShiftInitial, setAddShiftInitial] = useState<{
+    employee?: string;
+    day?: string;
+    startTime?: string;
+    endTime?: string;
+  }>({});
 
   const {
-    isEditMode,
     localSchedules,
     localSummaries,
+    hasUnsavedChanges,
+    isSaving,
     updateLocalShift,
+    addNewShift,
     setScheduleData,
+    toggleShiftLock,
+    deleteShift,
+    selectedShift,
+    setSelectedShift,
   } = useScheduleEditContext();
 
   const loadCachedSchedule = useCallback(async () => {
@@ -92,9 +105,77 @@ function ScheduleContent() {
     [updateLocalShift]
   );
 
-  // Use local schedules when in edit mode, otherwise use the original
-  const displaySchedules = isEditMode ? localSchedules : scheduleResult?.schedules ?? [];
-  const displaySummaries = isEditMode ? localSummaries : scheduleResult?.daily_summaries ?? [];
+  const handleShiftClick = useCallback((shift: EmployeeDaySchedule) => {
+    setSelectedShift(shift);
+  }, [setSelectedShift]);
+
+  const handleModalClose = useCallback(() => {
+    setSelectedShift(null);
+  }, [setSelectedShift]);
+
+  const handleModalSave = useCallback(
+    (newStart: string, newEnd: string) => {
+      if (selectedShift) {
+        updateLocalShift(
+          selectedShift.employee_name,
+          selectedShift.day_of_week,
+          newStart,
+          newEnd,
+          selectedShift.shift_start!,
+          selectedShift.shift_end!
+        );
+      }
+    },
+    [selectedShift, updateLocalShift]
+  );
+
+  const handleModalDelete = useCallback(() => {
+    if (selectedShift) {
+      deleteShift(selectedShift.employee_name, selectedShift.day_of_week);
+    }
+  }, [selectedShift, deleteShift]);
+
+  const handleModalToggleLock = useCallback(() => {
+    if (selectedShift) {
+      toggleShiftLock(selectedShift.employee_name, selectedShift.day_of_week);
+      // Update the selected shift with new lock state
+      const updatedShift = localSchedules.find(
+        (s) => s.employee_name === selectedShift.employee_name && s.day_of_week === selectedShift.day_of_week
+      );
+      if (updatedShift) {
+        setSelectedShift({ ...updatedShift, is_locked: !selectedShift.is_locked });
+      }
+    }
+  }, [selectedShift, toggleShiftLock, localSchedules, setSelectedShift]);
+
+  const handleEmptyClick = useCallback((
+    employeeName: string,
+    dayOfWeek: string,
+    startTime?: string,
+    endTime?: string
+  ) => {
+    setAddShiftInitial({ employee: employeeName, day: dayOfWeek, startTime, endTime });
+    setShowAddModal(true);
+  }, []);
+
+  const handleAddShiftButtonClick = useCallback(() => {
+    setAddShiftInitial({});
+    setShowAddModal(true);
+  }, []);
+
+  const displaySchedules = localSchedules.length > 0 ? localSchedules : scheduleResult?.schedules ?? [];
+  const displaySummaries = localSummaries.length > 0 ? localSummaries : scheduleResult?.daily_summaries ?? [];
+
+  const uniqueEmployees = useMemo(() => {
+    const names = new Set(displaySchedules.map((s) => s.employee_name));
+    return Array.from(names).sort();
+  }, [displaySchedules]);
+
+  const uniqueDays = useMemo(() => {
+    const dayOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const days = new Set(displaySchedules.map((s) => s.day_of_week));
+    return Array.from(days).sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
+  }, [displaySchedules]);
 
   return (
     <div className="space-y-8">
@@ -119,7 +200,7 @@ function ScheduleContent() {
           <div className="flex items-center gap-4">
             <Button
               onClick={runSolver}
-              disabled={status === "running" || isEditMode}
+              disabled={status === "running" || hasUnsavedChanges || isSaving}
               size="lg"
             >
               {status === "running" ? (
@@ -181,8 +262,14 @@ function ScheduleContent() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            {scheduleResult && scheduleId && (
+              <Button variant="outline" size="sm" onClick={handleAddShiftButtonClick}>
+                <Plus className="h-4 w-4 mr-1" />
+                Add Shift
+              </Button>
+            )}
             {scheduleResult && scheduleId && <EditModeToolbar />}
-            {scheduleResult && !isEditMode && (
+            {scheduleResult && !hasUnsavedChanges && !isSaving && (
               <Button variant="outline" size="sm" onClick={runSolver}>
                 <RefreshCw className="h-4 w-4 mr-1" />
                 Regenerate
@@ -218,18 +305,36 @@ function ScheduleContent() {
                 )}
               </div>
 
-              {isEditMode && (
-                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
-                  <strong>Edit Mode:</strong> Drag shifts up/down to change times, drag to another column to reassign, or resize by dragging the edges.
-                  Press <kbd className="px-1.5 py-0.5 bg-blue-100 rounded text-xs">Ctrl+Z</kbd> to undo.
-                </div>
-              )}
-
               <WeeklyCalendar
                 schedules={displaySchedules}
                 dailySummaries={displaySummaries}
-                isEditMode={isEditMode}
+                isEditMode={true}
                 onShiftUpdate={handleShiftUpdate}
+                onToggleLock={toggleShiftLock}
+                onShiftClick={handleShiftClick}
+                onEmptyClick={handleEmptyClick}
+              />
+
+              <ShiftDetailModal
+                shift={selectedShift}
+                open={selectedShift !== null}
+                onClose={handleModalClose}
+                onSave={handleModalSave}
+                onDelete={handleModalDelete}
+                onToggleLock={handleModalToggleLock}
+                isEditMode={true}
+              />
+
+              <AddShiftModal
+                open={showAddModal}
+                onClose={() => setShowAddModal(false)}
+                onAdd={addNewShift}
+                employees={uniqueEmployees}
+                days={uniqueDays}
+                initialEmployee={addShiftInitial.employee}
+                initialDay={addShiftInitial.day}
+                initialStartTime={addShiftInitial.startTime}
+                initialEndTime={addShiftInitial.endTime}
               />
             </div>
           ) : (

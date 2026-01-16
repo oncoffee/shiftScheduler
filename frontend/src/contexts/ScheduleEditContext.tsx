@@ -15,17 +15,17 @@ import type {
 } from "@/types/schedule";
 import { api } from "@/api/client";
 
+type SaveStatus = "idle" | "saving" | "saved" | "error";
+
 interface ScheduleEditContextValue {
-  isEditMode: boolean;
   hasUnsavedChanges: boolean;
   isSaving: boolean;
+  saveStatus: SaveStatus;
   localSchedules: EmployeeDaySchedule[];
   localSummaries: DayScheduleSummary[];
   undoStack: ScheduleSnapshot[];
   scheduleId: string | null;
   originalSchedule: WeeklyScheduleResult | null;
-  enterEditMode: () => void;
-  exitEditMode: () => void;
   updateLocalShift: (
     employeeName: string,
     dayOfWeek: string,
@@ -35,11 +35,19 @@ interface ScheduleEditContextValue {
     originalEnd: string,
     newEmployeeName?: string
   ) => void;
-  saveChanges: () => Promise<void>;
-  discardChanges: () => void;
+  addNewShift: (
+    employeeName: string,
+    dayOfWeek: string,
+    startTime: string,
+    endTime: string
+  ) => void;
   undo: () => void;
   canUndo: boolean;
   setScheduleData: (schedule: WeeklyScheduleResult, id: string) => void;
+  toggleShiftLock: (employeeName: string, dayOfWeek: string) => Promise<void>;
+  deleteShift: (employeeName: string, dayOfWeek: string) => Promise<void>;
+  selectedShift: EmployeeDaySchedule | null;
+  setSelectedShift: (shift: EmployeeDaySchedule | null) => void;
 }
 
 const ScheduleEditContext = createContext<ScheduleEditContextValue | null>(null);
@@ -50,15 +58,18 @@ interface ScheduleEditProviderProps {
   children: ReactNode;
 }
 
+const AUTO_SAVE_DELAY = 500; // ms debounce for auto-save
+
 export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
-  const [isEditMode, setIsEditMode] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [scheduleId, setScheduleId] = useState<string | null>(null);
   const [originalSchedule, setOriginalSchedule] = useState<WeeklyScheduleResult | null>(null);
   const [localSchedules, setLocalSchedules] = useState<EmployeeDaySchedule[]>([]);
   const [localSummaries, setLocalSummaries] = useState<DayScheduleSummary[]>([]);
   const [undoStack, setUndoStack] = useState<ScheduleSnapshot[]>([]);
   const [pendingChanges, setPendingChanges] = useState<ShiftEditRequest[]>([]);
+  const [selectedShift, setSelectedShift] = useState<EmployeeDaySchedule | null>(null);
 
   const hasUnsavedChanges = pendingChanges.length > 0;
   const canUndo = undoStack.length > 0;
@@ -82,14 +93,6 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
       },
     ]);
   }, [localSchedules, localSummaries]);
-
-  const enterEditMode = useCallback(() => {
-    setIsEditMode(true);
-  }, []);
-
-  const exitEditMode = useCallback(() => {
-    setIsEditMode(false);
-  }, []);
 
   const parseTimeToMinutes = (timeStr: string): number => {
     const parts = timeStr.split(":");
@@ -220,16 +223,75 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
     [saveSnapshot]
   );
 
+  const addNewShift = useCallback(
+    (employeeName: string, dayOfWeek: string, startTime: string, endTime: string) => {
+      saveSnapshot();
+
+      setLocalSchedules((prev) =>
+        prev.map((schedule) => {
+          if (schedule.employee_name === employeeName && schedule.day_of_week === dayOfWeek) {
+            return addShiftToSchedule(schedule, startTime, endTime);
+          }
+          return schedule;
+        })
+      );
+
+      setPendingChanges((prev) => [
+        ...prev,
+        {
+          employee_name: employeeName,
+          day_of_week: dayOfWeek,
+          new_shift_start: startTime,
+          new_shift_end: endTime,
+        },
+      ]);
+    },
+    [saveSnapshot]
+  );
+
   const saveChanges = useCallback(async () => {
     if (!scheduleId || pendingChanges.length === 0) return;
+
+    const lockedShifts = localSchedules
+      .filter((s) => s.is_locked && s.total_hours > 0)
+      .map((s) => ({ employee_name: s.employee_name, day_of_week: s.day_of_week }));
 
     setIsSaving(true);
     try {
       const result = await api.batchUpdateAssignments(scheduleId, pendingChanges);
 
       if (result.success) {
-        setOriginalSchedule(result.updated_schedule);
-        setLocalSchedules(structuredClone(result.updated_schedule.schedules));
+        let finalSchedules = structuredClone(result.updated_schedule.schedules);
+
+        for (const locked of lockedShifts) {
+          const pendingChange = pendingChanges.find(
+            (c) => c.employee_name === locked.employee_name && c.day_of_week === locked.day_of_week
+          );
+          const targetEmployee = pendingChange?.new_employee_name || locked.employee_name;
+
+          const serverSchedule = finalSchedules.find(
+            (s) => s.employee_name === targetEmployee && s.day_of_week === locked.day_of_week
+          );
+
+          if (serverSchedule && serverSchedule.total_hours > 0 && !serverSchedule.is_locked) {
+            try {
+              const lockResult = await api.toggleShiftLock(
+                scheduleId,
+                targetEmployee,
+                locked.day_of_week,
+                true
+              );
+              if (lockResult.success) {
+                finalSchedules = structuredClone(lockResult.updated_schedule.schedules);
+              }
+            } catch (e) {
+              console.error("Failed to persist lock state:", e);
+            }
+          }
+        }
+
+        setOriginalSchedule({ ...result.updated_schedule, schedules: finalSchedules });
+        setLocalSchedules(finalSchedules);
         setLocalSummaries(structuredClone(result.updated_schedule.daily_summaries));
         setPendingChanges([]);
         setUndoStack([]);
@@ -255,16 +317,7 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
     } finally {
       setIsSaving(false);
     }
-  }, [scheduleId, pendingChanges]);
-
-  const discardChanges = useCallback(() => {
-    if (originalSchedule) {
-      setLocalSchedules(structuredClone(originalSchedule.schedules));
-      setLocalSummaries(structuredClone(originalSchedule.daily_summaries));
-    }
-    setPendingChanges([]);
-    setUndoStack([]);
-  }, [originalSchedule]);
+  }, [scheduleId, pendingChanges, localSchedules]);
 
   const undo = useCallback(() => {
     if (undoStack.length === 0) return;
@@ -277,34 +330,180 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
     setPendingChanges((prev) => prev.slice(0, -1));
   }, [undoStack]);
 
+  const toggleShiftLock = useCallback(
+    async (employeeName: string, dayOfWeek: string) => {
+      if (!scheduleId) return;
+
+      const schedule = localSchedules.find(
+        (s) => s.employee_name === employeeName && s.day_of_week === dayOfWeek
+      );
+      if (!schedule) return;
+
+      if (schedule.total_hours === 0) return;
+
+      const currentlyLocked = schedule.is_locked ?? false;
+      const newLockState = !currentlyLocked;
+
+      setLocalSchedules((prev) =>
+        prev.map((s) =>
+          s.employee_name === employeeName && s.day_of_week === dayOfWeek
+            ? { ...s, is_locked: newLockState }
+            : s
+        )
+      );
+
+      if (pendingChanges.length > 0) {
+        return;
+      }
+
+      try {
+        const result = await api.toggleShiftLock(
+          scheduleId,
+          employeeName,
+          dayOfWeek,
+          newLockState
+        );
+
+        if (result.success) {
+          setOriginalSchedule(result.updated_schedule);
+
+          setLocalSchedules((prev) =>
+            prev.map((s) => {
+              if (s.employee_name === employeeName && s.day_of_week === dayOfWeek) {
+                const serverSchedule = result.updated_schedule.schedules.find(
+                  (ss) => ss.employee_name === employeeName && ss.day_of_week === dayOfWeek
+                );
+                return { ...s, is_locked: serverSchedule?.is_locked ?? newLockState };
+              }
+              return s;
+            })
+          );
+        }
+      } catch (error) {
+        console.error("Failed to toggle lock:", error);
+        setLocalSchedules((prev) =>
+          prev.map((s) =>
+            s.employee_name === employeeName && s.day_of_week === dayOfWeek
+              ? { ...s, is_locked: currentlyLocked }
+              : s
+          )
+        );
+      }
+    },
+    [scheduleId, localSchedules, pendingChanges.length]
+  );
+
+  const deleteShift = useCallback(
+    async (employeeName: string, dayOfWeek: string) => {
+      if (!scheduleId) return;
+
+      const schedule = localSchedules.find(
+        (s) => s.employee_name === employeeName && s.day_of_week === dayOfWeek
+      );
+      if (!schedule || schedule.total_hours === 0) return;
+
+      if (schedule.is_locked) {
+        console.error("Cannot delete a locked shift");
+        return;
+      }
+
+      saveSnapshot();
+
+      setLocalSchedules((prev) =>
+        prev.map((s) =>
+          s.employee_name === employeeName && s.day_of_week === dayOfWeek
+            ? {
+                ...s,
+                total_hours: 0,
+                shift_start: null,
+                shift_end: null,
+                is_short_shift: false,
+                periods: s.periods.map((p) => ({ ...p, scheduled: false })),
+              }
+            : s
+        )
+      );
+
+      if (pendingChanges.length > 0) {
+        setPendingChanges((prev) => [
+          ...prev.filter(
+            (c) => !(c.employee_name === employeeName && c.day_of_week === dayOfWeek)
+          ),
+          {
+            employee_name: employeeName,
+            day_of_week: dayOfWeek,
+            new_shift_start: "00:00",
+            new_shift_end: "00:00",
+          },
+        ]);
+        return;
+      }
+
+      try {
+        const result = await api.deleteShift(scheduleId, employeeName, dayOfWeek);
+
+        if (result.success) {
+          setOriginalSchedule(result.updated_schedule);
+          setLocalSchedules(structuredClone(result.updated_schedule.schedules));
+          setLocalSummaries(structuredClone(result.updated_schedule.daily_summaries));
+        }
+      } catch (error) {
+        console.error("Failed to delete shift:", error);
+        if (originalSchedule) {
+          setLocalSchedules(structuredClone(originalSchedule.schedules));
+        }
+      }
+    },
+    [scheduleId, localSchedules, pendingChanges.length, saveSnapshot, originalSchedule]
+  );
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "z" && isEditMode) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         e.preventDefault();
         undo();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [undo, isEditMode]);
+  }, [undo]);
+
+  useEffect(() => {
+    if (!scheduleId || pendingChanges.length === 0 || isSaving) return;
+
+    setSaveStatus("saving");
+    const timer = setTimeout(async () => {
+      try {
+        await saveChanges();
+        setSaveStatus("saved");
+        setTimeout(() => setSaveStatus("idle"), 1500);
+      } catch {
+        setSaveStatus("error");
+        setTimeout(() => setSaveStatus("idle"), 3000);
+      }
+    }, AUTO_SAVE_DELAY);
+
+    return () => clearTimeout(timer);
+  }, [pendingChanges, scheduleId, isSaving, saveChanges]);
 
   const value: ScheduleEditContextValue = {
-    isEditMode,
     hasUnsavedChanges,
     isSaving,
+    saveStatus,
     localSchedules,
     localSummaries,
     undoStack,
     scheduleId,
     originalSchedule,
-    enterEditMode,
-    exitEditMode,
     updateLocalShift,
-    saveChanges,
-    discardChanges,
+    addNewShift,
     undo,
     canUndo,
     setScheduleData,
+    toggleShiftLock,
+    deleteShift,
+    selectedShift,
+    setSelectedShift,
   };
 
   return (
