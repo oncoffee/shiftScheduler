@@ -2,8 +2,8 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { api, type Config } from "@/api/client";
-import { Loader2, Save, RefreshCw, AlertCircle, CheckCircle2 } from "lucide-react";
+import { api, type Config, type SyncResult } from "@/api/client";
+import { Loader2, Save, RefreshCw, AlertCircle, CheckCircle2, Database } from "lucide-react";
 
 export function Settings() {
   const [config, setConfig] = useState<Config | null>(null);
@@ -17,6 +17,12 @@ export function Settings() {
     min_shift_hours: 3,
     max_daily_hours: 11,
   });
+
+  // Sync state
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [passKey, setPassKey] = useState("");
 
   const loadConfig = async () => {
     setLoading(true);
@@ -50,6 +56,26 @@ export function Settings() {
       setError(err instanceof Error ? err.message : "Failed to save config");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSync = async () => {
+    if (!passKey) {
+      setSyncError("Pass key is required");
+      return;
+    }
+    setSyncing(true);
+    setSyncError(null);
+    setSyncResult(null);
+    try {
+      const result = await api.syncAll(passKey);
+      setSyncResult(result);
+      // Reload config after sync
+      loadConfig();
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : "Failed to sync data");
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -214,6 +240,57 @@ export function Settings() {
 
       <Card>
         <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Database className="w-5 h-5" />
+            Data Sync
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Sync data from Google Sheets to MongoDB. This will update employees, stores, and configuration.
+          </p>
+
+          {syncError && (
+            <div className="flex items-center gap-2 p-3 bg-red-50 text-red-700 rounded-lg">
+              <AlertCircle className="w-4 h-4" />
+              <span className="text-sm">{syncError}</span>
+            </div>
+          )}
+
+          {syncResult && (
+            <div className="flex items-center gap-2 p-3 bg-green-50 text-green-700 rounded-lg">
+              <CheckCircle2 className="w-4 h-4" />
+              <span className="text-sm">
+                Synced {syncResult.employees_synced} employees, {syncResult.stores_synced} stores
+              </span>
+            </div>
+          )}
+
+          <div className="flex items-end gap-4">
+            <div className="flex-1 space-y-2">
+              <label className="text-sm font-medium">Pass Key</label>
+              <input
+                type="password"
+                value={passKey}
+                onChange={(e) => setPassKey(e.target.value)}
+                placeholder="Enter pass key"
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+            <Button onClick={handleSync} disabled={syncing || !passKey}>
+              {syncing ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4 mr-2" />
+              )}
+              Sync from Google Sheets
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>API Configuration</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -227,7 +304,7 @@ export function Settings() {
           <div>
             <label className="text-sm font-medium">Google Sheets Integration</label>
             <p className="text-sm text-muted-foreground">
-              Data is sourced from Google Sheets. Configure the sheet in the backend .env file.
+              Data is sourced from Google Sheets and synced to MongoDB. Use the sync button above to update.
             </p>
           </div>
         </CardContent>

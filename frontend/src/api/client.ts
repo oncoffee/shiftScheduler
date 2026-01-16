@@ -23,28 +23,33 @@ async function fetchApi<T>(
 }
 
 export const api = {
-  // Solver - returns structured schedule result
+  syncAll: (passKey: string) =>
+    fetchApi<SyncResult>(`/sync/all?pass_key=${passKey}`, { method: "POST" }),
+
   runSolver: (passKey: string) =>
     fetchApi<WeeklyScheduleResult>(`/solver/run?pass_key=${passKey}`),
 
-  // Get last schedule results (cached)
   getScheduleResults: () =>
     fetchApi<WeeklyScheduleResult | null>("/schedule/results"),
 
-  // Logs
+  getScheduleHistory: (limit = 20, skip = 0) =>
+    fetchApi<ScheduleHistoryItem[]>(
+      `/schedule/history?limit=${limit}&skip=${skip}`
+    ),
+
+  getScheduleById: (id: string) =>
+    fetchApi<WeeklyScheduleResult>(`/schedule/${id}`),
+
   getLogs: () => fetchApi<string>("/logs"),
 
-  // Employees
   getEmployees: () => fetchApi<Employee[]>("/employees"),
 
-  // Stores
   getStores: () => fetchApi<Store[]>("/stores"),
 
-  // Employee availability schedules
   getSchedules: () => fetchApi<Schedule[]>("/schedules"),
 
-  // Config
   getConfig: () => fetchApi<Config>("/config"),
+
   updateConfig: (config: Partial<Config>) => {
     const params = new URLSearchParams();
     if (config.dummy_worker_cost !== undefined)
@@ -59,7 +64,6 @@ export const api = {
   },
 };
 
-// Types
 export interface Employee {
   employee_name: string;
   hourly_rate: number;
@@ -93,4 +97,22 @@ export interface Config {
   short_shift_penalty: number;
   min_shift_hours: number;
   max_daily_hours: number;
+}
+
+export interface SyncResult {
+  employees_synced: number;
+  stores_synced: number;
+  config_synced: boolean;
+  synced_at: string;
+}
+
+export interface ScheduleHistoryItem {
+  id: string;
+  week_no: number;
+  store_name: string;
+  generated_at: string;
+  total_weekly_cost: number;
+  status: string;
+  has_warnings: boolean;
+  is_current: boolean;
 }

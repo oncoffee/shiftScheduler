@@ -4,6 +4,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { Employees } from "@/pages/Employees";
 import { Stores } from "@/pages/Stores";
 import { Schedule } from "@/pages/Schedule";
+import { History } from "@/pages/History";
 import { Logs } from "@/pages/Logs";
 import { Settings } from "@/pages/Settings";
 
@@ -16,6 +17,7 @@ function App() {
           <Route path="employees" element={<Employees />} />
           <Route path="stores" element={<Stores />} />
           <Route path="schedule" element={<Schedule />} />
+          <Route path="history" element={<History />} />
           <Route path="logs" element={<Logs />} />
           <Route path="settings" element={<Settings />} />
         </Route>

@@ -5,6 +5,7 @@ import {
   Users,
   Store,
   Calendar,
+  History,
   FileText,
   Settings,
 } from "lucide-react";
@@ -14,6 +15,7 @@ const navItems = [
   { to: "/employees", icon: Users, label: "Employees" },
   { to: "/stores", icon: Store, label: "Stores" },
   { to: "/schedule", icon: Calendar, label: "Schedule" },
+  { to: "/history", icon: History, label: "History" },
   { to: "/logs", icon: FileText, label: "Logs" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
