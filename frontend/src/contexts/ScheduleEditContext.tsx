@@ -94,6 +94,50 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
     return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
   };
 
+  const applyShiftToSchedule = (
+    schedule: EmployeeDaySchedule,
+    shiftStart: string | null,
+    shiftEnd: string | null
+  ): EmployeeDaySchedule => {
+    if (!shiftStart || !shiftEnd) {
+      const clearedPeriods = schedule.periods.map((p) => ({
+        ...p,
+        scheduled: false,
+      }));
+      return {
+        ...schedule,
+        periods: clearedPeriods,
+        total_hours: 0,
+        shift_start: null,
+        shift_end: null,
+        is_short_shift: false,
+      };
+    }
+
+    const startMinutes = parseTimeToMinutes(shiftStart);
+    const endMinutes = parseTimeToMinutes(shiftEnd);
+
+    const updatedPeriods = schedule.periods.map((p) => {
+      const periodStart = parseTimeToMinutes(p.start_time);
+      const periodEnd = parseTimeToMinutes(p.end_time);
+      const scheduled = periodStart >= startMinutes && periodEnd <= endMinutes;
+      return { ...p, scheduled };
+    });
+
+    const scheduledCount = updatedPeriods.filter((p) => p.scheduled).length;
+    const totalHours = scheduledCount * 0.5;
+    const isShortShift = totalHours > 0 && totalHours < 3;
+
+    return {
+      ...schedule,
+      periods: updatedPeriods,
+      total_hours: totalHours,
+      shift_start: totalHours > 0 ? shiftStart : null,
+      shift_end: totalHours > 0 ? shiftEnd : null,
+      is_short_shift: isShortShift,
+    };
+  };
+
   const updateLocalShift = useCallback(
     (
       employeeName: string,
@@ -104,100 +148,41 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
     ) => {
       saveSnapshot();
 
-      const startMinutes = parseTimeToMinutes(newStart);
-      const endMinutes = parseTimeToMinutes(newEnd);
-
       setLocalSchedules((prev) => {
-        const updated = prev.map((schedule) => {
-          if (newEmployeeName && newEmployeeName !== employeeName) {
-            if (
-              schedule.employee_name === employeeName &&
-              schedule.day_of_week === dayOfWeek
-            ) {
-              const clearedPeriods = schedule.periods.map((p) => ({
-                ...p,
-                scheduled: false,
-              }));
-              return {
-                ...schedule,
-                periods: clearedPeriods,
-                total_hours: 0,
-                shift_start: null,
-                shift_end: null,
-                is_short_shift: false,
-              };
+        if (newEmployeeName && newEmployeeName !== employeeName) {
+          const targetSchedule = prev.find(
+            (s) => s.employee_name === newEmployeeName && s.day_of_week === dayOfWeek
+          );
+
+          const sourceShift = { start: newStart, end: newEnd };
+          const targetShift = targetSchedule?.shift_start && targetSchedule?.shift_end
+            ? { start: targetSchedule.shift_start, end: targetSchedule.shift_end }
+            : null;
+
+          return prev.map((schedule) => {
+            if (schedule.employee_name === employeeName && schedule.day_of_week === dayOfWeek) {
+              return applyShiftToSchedule(
+                schedule,
+                targetShift?.start || null,
+                targetShift?.end || null
+              );
             }
-
-            if (
-              schedule.employee_name === newEmployeeName &&
-              schedule.day_of_week === dayOfWeek
-            ) {
-              const updatedPeriods = schedule.periods.map((p) => {
-                const periodStart = parseTimeToMinutes(p.start_time);
-                const periodEnd = parseTimeToMinutes(p.end_time);
-                const scheduled =
-                  periodStart >= startMinutes && periodEnd <= endMinutes;
-                return { ...p, scheduled };
-              });
-
-              const scheduledCount = updatedPeriods.filter(
-                (p) => p.scheduled
-              ).length;
-              const totalHours = scheduledCount * 0.5;
-              const isShortShift = totalHours > 0 && totalHours < 3;
-
-              return {
-                ...schedule,
-                periods: updatedPeriods,
-                total_hours: totalHours,
-                shift_start: totalHours > 0 ? newStart : null,
-                shift_end: totalHours > 0 ? newEnd : null,
-                is_short_shift: isShortShift,
-              };
+            if (schedule.employee_name === newEmployeeName && schedule.day_of_week === dayOfWeek) {
+              return applyShiftToSchedule(schedule, sourceShift.start, sourceShift.end);
             }
-
             return schedule;
+          });
+        }
+
+        return prev.map((schedule) => {
+          if (schedule.employee_name === employeeName && schedule.day_of_week === dayOfWeek) {
+            return applyShiftToSchedule(schedule, newStart, newEnd);
           }
-
-          if (
-            schedule.employee_name === employeeName &&
-            schedule.day_of_week === dayOfWeek
-          ) {
-            const updatedPeriods = schedule.periods.map((p) => {
-              const periodStart = parseTimeToMinutes(p.start_time);
-              const periodEnd = parseTimeToMinutes(p.end_time);
-              const scheduled =
-                periodStart >= startMinutes && periodEnd <= endMinutes;
-              return { ...p, scheduled };
-            });
-
-            const scheduledCount = updatedPeriods.filter(
-              (p) => p.scheduled
-            ).length;
-            const totalHours = scheduledCount * 0.5;
-            const isShortShift = totalHours > 0 && totalHours < 3;
-
-            return {
-              ...schedule,
-              periods: updatedPeriods,
-              total_hours: totalHours,
-              shift_start: totalHours > 0 ? newStart : null,
-              shift_end: totalHours > 0 ? newEnd : null,
-              is_short_shift: isShortShift,
-            };
-          }
-
           return schedule;
         });
-
-        return updated;
       });
 
-      setPendingChanges((prev) => [
-        ...prev.filter(
-          (c) =>
-            !(c.employee_name === employeeName && c.day_of_week === dayOfWeek)
-        ),
+      const changes: ShiftEditRequest[] = [
         {
           employee_name: employeeName,
           day_of_week: dayOfWeek,
@@ -205,6 +190,14 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
           new_shift_end: newEnd,
           new_employee_name: newEmployeeName,
         },
+      ];
+
+      setPendingChanges((prev) => [
+        ...prev.filter(
+          (c) =>
+            !(c.employee_name === employeeName && c.day_of_week === dayOfWeek)
+        ),
+        ...changes,
       ]);
     },
     [saveSnapshot]
