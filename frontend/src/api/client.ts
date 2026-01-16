@@ -172,7 +172,6 @@ export interface EmployeeSchedule {
 }
 
 export interface Store {
-  week_no: number;
   store_name: string;
   day_of_week: string;
   start_time: string;
@@ -180,7 +179,6 @@ export interface Store {
 }
 
 export interface StoreHoursUpdate {
-  week_no: number;
   day_of_week: string;
   start_time: string;
   end_time: string;

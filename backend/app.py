@@ -455,7 +455,6 @@ async def get_stores():
         for hours in store.hours:
             result.append(
                 {
-                    "week_no": hours.week_no,
                     "store_name": store.store_name,
                     "day_of_week": hours.day_of_week,
                     "start_time": normalize_time(hours.start_time),
@@ -906,7 +905,6 @@ class DeleteShiftResponse(BaseModel):
 
 
 class StoreHoursUpdate(BaseModel):
-    week_no: int
     day_of_week: str
     start_time: str
     end_time: str
@@ -1069,7 +1067,6 @@ async def update_store(store_name: str, request: StoreUpdateRequest):
 
     hours = [
         StoreHours(
-            week_no=h.week_no,
             day_of_week=h.day_of_week,
             start_time=h.start_time,
             end_time=h.end_time,
@@ -1107,7 +1104,6 @@ async def create_store(request: CreateStoreRequest):
         store_name=request.store_name,
         hours=[
             StoreHours(
-                week_no=h.week_no,
                 day_of_week=h.day_of_week,
                 start_time=h.start_time,
                 end_time=h.end_time,

@@ -1,6 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, type Store, type StoreHoursUpdate, type StaffingRequirement } from "@/api/client";
 import { useAsyncData } from "@/hooks/useAsyncData";
@@ -23,7 +22,6 @@ const SHORT_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 interface StoreGrouped {
   store_name: string;
-  week_no: number;
   hours: Record<string, { start_time: string; end_time: string }>;
 }
 
@@ -33,7 +31,6 @@ function groupStores(stores: Store[]): StoreGrouped[] {
     if (!grouped.has(s.store_name)) {
       grouped.set(s.store_name, {
         store_name: s.store_name,
-        week_no: s.week_no,
         hours: {},
       });
     }
@@ -155,7 +152,6 @@ function StoreCard({ store, onEdit, onDelete, onHoursChange, onStaffingChange }:
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <CardTitle className="text-lg">{store.store_name}</CardTitle>
-            <Badge variant="outline">Week {store.week_no}</Badge>
             {saving && (
               <div className="flex items-center gap-1.5 text-blue-600 text-sm">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -288,14 +284,12 @@ export function Stores() {
   const handleHoursChange = useCallback(
     async (
       storeName: string,
-      weekNo: number,
       hours: Record<string, { start_time: string; end_time: string } | null>
     ) => {
       const hoursArray: StoreHoursUpdate[] = [];
       for (const day of DAYS_OF_WEEK) {
         if (hours[day]) {
           hoursArray.push({
-            week_no: weekNo,
             day_of_week: day,
             start_time: hours[day]!.start_time,
             end_time: hours[day]!.end_time,
@@ -371,7 +365,7 @@ export function Stores() {
               onEdit={() => handleEditStore(store)}
               onDelete={() => handleDeleteClick(store.store_name)}
               onHoursChange={(hours) =>
-                handleHoursChange(store.store_name, store.week_no, hours)
+                handleHoursChange(store.store_name, hours)
               }
               onStaffingChange={(requirements) =>
                 handleStaffingChange(store.store_name, requirements)

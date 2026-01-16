@@ -19,7 +19,6 @@ interface StoreEditModalProps {
   onSave: (storeName: string, hours: StoreHoursUpdate[]) => Promise<void>;
   store: {
     store_name: string;
-    week_no: number;
     hours: Record<string, { start_time: string; end_time: string }>;
   } | null;
   isNew?: boolean;
@@ -33,7 +32,6 @@ export function StoreEditModal({
   isNew = false,
 }: StoreEditModalProps) {
   const [storeName, setStoreName] = useState("");
-  const [weekNo, setWeekNo] = useState(1);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,10 +39,8 @@ export function StoreEditModal({
     if (open) {
       if (store) {
         setStoreName(store.store_name);
-        setWeekNo(store.week_no);
       } else {
         setStoreName("");
-        setWeekNo(1);
       }
       setError(null);
     }
@@ -60,26 +56,20 @@ export function StoreEditModal({
     setError(null);
 
     try {
-      // For new stores, create with default weekday hours
-      // For existing stores, preserve the existing hours
       let hours: StoreHoursUpdate[] = [];
 
       if (isNew) {
-        // Default hours for new store: Mon-Fri 9AM-5PM
         for (const day of DAYS_OF_WEEK.slice(0, 5)) {
           hours.push({
-            week_no: weekNo,
             day_of_week: day,
             start_time: "09:00",
             end_time: "17:00",
           });
         }
       } else if (store) {
-        // Preserve existing hours but update week_no
         for (const day of DAYS_OF_WEEK) {
           if (store.hours[day]) {
             hours.push({
-              week_no: weekNo,
               day_of_week: day,
               start_time: store.hours[day].start_time,
               end_time: store.hours[day].end_time,
@@ -122,19 +112,6 @@ export function StoreEditModal({
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               placeholder="Enter store name"
               autoFocus
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-gray-700">
-              Week Number
-            </label>
-            <input
-              type="number"
-              value={weekNo}
-              onChange={(e) => setWeekNo(parseInt(e.target.value) || 1)}
-              min={1}
-              className="w-24 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
 

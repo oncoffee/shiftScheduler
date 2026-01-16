@@ -26,7 +26,6 @@ class EmployeeDoc(Document):
 
 
 class StoreHours(BaseModel):
-    week_no: int
     day_of_week: str
     start_time: str
     end_time: str

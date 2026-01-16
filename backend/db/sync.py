@@ -125,7 +125,6 @@ async def sync_stores() -> int:
 
         hours_map[store_name].append(
             StoreHours(
-                week_no=int(row.get("Week no", 1)),
                 day_of_week=row.get("Day of week", ""),
                 start_time=row.get("Start time", ""),
                 end_time=row.get("End time", ""),
