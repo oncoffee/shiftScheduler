@@ -40,6 +40,7 @@ from db import (
     ShiftPeriodEmbed,
 )
 from db.database import close_db
+from db.models import StoreHours
 
 load_dotenv()
 
@@ -333,9 +334,93 @@ async def get_employees():
             "minimum_hours_per_week": e.minimum_hours_per_week,
             "minimum_hours": e.minimum_hours,
             "maximum_hours": e.maximum_hours,
+            "availability": [
+                {
+                    "day_of_week": a.day_of_week,
+                    "start_time": normalize_time(a.start_time),
+                    "end_time": normalize_time(a.end_time),
+                }
+                for a in e.availability
+            ],
         }
         for e in employees
     ]
+
+
+class AvailabilitySlotUpdate(BaseModel):
+    day_of_week: str
+    start_time: str
+    end_time: str
+
+
+class EmployeeAvailabilityUpdate(BaseModel):
+    availability: list[AvailabilitySlotUpdate]
+
+
+@app.put("/employees/{employee_name}/availability")
+async def update_employee_availability(employee_name: str, request: EmployeeAvailabilityUpdate):
+    from db.models import AvailabilitySlot
+
+    employee = await EmployeeDoc.find_one(EmployeeDoc.employee_name == employee_name)
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    availability = [
+        AvailabilitySlot(
+            day_of_week=a.day_of_week,
+            start_time=a.start_time,
+            end_time=a.end_time,
+        )
+        for a in request.availability
+    ]
+
+    await employee.set({
+        "availability": availability,
+        "updated_at": datetime.utcnow(),
+    })
+
+    return {"success": True, "employee_name": employee_name}
+
+
+def normalize_time(time_str: str) -> str:
+    """Convert various time formats to HH:MM 24-hour format."""
+    if not time_str:
+        return time_str
+
+    time_str = time_str.strip()
+
+    # Already in HH:MM format
+    if len(time_str) == 5 and time_str[2] == ':':
+        return time_str
+
+    # Handle AM/PM formats like "6:30:00 AM" or "7:00 PM"
+    time_upper = time_str.upper()
+    is_pm = 'PM' in time_upper
+    is_am = 'AM' in time_upper
+
+    if is_am or is_pm:
+        # Remove AM/PM and extra spaces
+        time_part = time_upper.replace('AM', '').replace('PM', '').strip()
+        parts = time_part.split(':')
+        hours = int(parts[0])
+        minutes = int(parts[1]) if len(parts) > 1 else 0
+
+        # Convert to 24-hour format
+        if is_pm and hours != 12:
+            hours += 12
+        elif is_am and hours == 12:
+            hours = 0
+
+        return f"{hours:02d}:{minutes:02d}"
+
+    # Try to parse as HH:MM:SS
+    parts = time_str.split(':')
+    if len(parts) >= 2:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        return f"{hours:02d}:{minutes:02d}"
+
+    return time_str
 
 
 @app.get("/stores")
@@ -353,8 +438,8 @@ async def get_stores():
                     "week_no": hours.week_no,
                     "store_name": store.store_name,
                     "day_of_week": hours.day_of_week,
-                    "start_time": hours.start_time,
-                    "end_time": hours.end_time,
+                    "start_time": normalize_time(hours.start_time),
+                    "end_time": normalize_time(hours.end_time),
                 }
             )
     return result
@@ -799,6 +884,23 @@ class DeleteShiftResponse(BaseModel):
     updated_schedule: WeeklyScheduleResult
 
 
+class StoreHoursUpdate(BaseModel):
+    week_no: int
+    day_of_week: str
+    start_time: str
+    end_time: str
+
+
+class StoreUpdateRequest(BaseModel):
+    store_name: str | None = None
+    hours: list[StoreHoursUpdate]
+
+
+class CreateStoreRequest(BaseModel):
+    store_name: str
+    hours: list[StoreHoursUpdate] = []
+
+
 @app.delete("/schedule/{schedule_id}/shift", response_model=DeleteShiftResponse)
 async def delete_shift(schedule_id: str, request: DeleteShiftRequest):
     from beanie import PydanticObjectId
@@ -937,3 +1039,68 @@ async def delete_shift(schedule_id: str, request: DeleteShiftRequest):
         success=True,
         updated_schedule=result,
     )
+
+
+@app.put("/stores/{store_name}")
+async def update_store(store_name: str, request: StoreUpdateRequest):
+    store = await StoreDoc.find_one(StoreDoc.store_name == store_name)
+
+    hours = [
+        StoreHours(
+            week_no=h.week_no,
+            day_of_week=h.day_of_week,
+            start_time=h.start_time,
+            end_time=h.end_time,
+        )
+        for h in request.hours
+    ]
+
+    if not store:
+        # Store doesn't exist in MongoDB yet (might be from Google Sheets fallback)
+        # Create it now
+        new_name = request.store_name if request.store_name else store_name
+        store = StoreDoc(store_name=new_name, hours=hours)
+        await store.insert()
+        return {"success": True, "store_name": new_name}
+
+    # Update existing store
+    updates = {"updated_at": datetime.utcnow(), "hours": hours}
+    if request.store_name and request.store_name != store_name:
+        existing = await StoreDoc.find_one(StoreDoc.store_name == request.store_name)
+        if existing:
+            raise HTTPException(status_code=400, detail="A store with that name already exists")
+        updates["store_name"] = request.store_name
+
+    await store.set(updates)
+    return {"success": True, "store_name": updates.get("store_name", store_name)}
+
+
+@app.post("/stores")
+async def create_store(request: CreateStoreRequest):
+    existing = await StoreDoc.find_one(StoreDoc.store_name == request.store_name)
+    if existing:
+        raise HTTPException(status_code=400, detail="Store already exists")
+
+    store = StoreDoc(
+        store_name=request.store_name,
+        hours=[
+            StoreHours(
+                week_no=h.week_no,
+                day_of_week=h.day_of_week,
+                start_time=h.start_time,
+                end_time=h.end_time,
+            )
+            for h in request.hours
+        ],
+    )
+    await store.insert()
+    return {"success": True, "store_name": request.store_name}
+
+
+@app.delete("/stores/{store_name}")
+async def delete_store(store_name: str):
+    store = await StoreDoc.find_one(StoreDoc.store_name == store_name)
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+    await store.delete()
+    return {"success": True}

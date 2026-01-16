@@ -69,13 +69,61 @@ export const api = {
       body: JSON.stringify({ updates }),
     }),
 
+  toggleShiftLock: (scheduleId: string, employeeName: string, dayOfWeek: string, isLocked: boolean) =>
+    fetchApi<{
+      success: boolean;
+      updated_schedule: WeeklyScheduleResult;
+    }>(`/schedule/${scheduleId}/lock`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        employee_name: employeeName,
+        day_of_week: dayOfWeek,
+        is_locked: isLocked,
+      }),
+    }),
+
+  deleteShift: (scheduleId: string, employeeName: string, dayOfWeek: string) =>
+    fetchApi<{
+      success: boolean;
+      updated_schedule: WeeklyScheduleResult;
+    }>(`/schedule/${scheduleId}/shift`, {
+      method: "DELETE",
+      body: JSON.stringify({
+        employee_name: employeeName,
+        day_of_week: dayOfWeek,
+      }),
+    }),
+
   getLogs: () => fetchApi<string>("/logs"),
 
   getEmployees: () => fetchApi<Employee[]>("/employees"),
 
   getStores: () => fetchApi<Store[]>("/stores"),
 
+  updateStore: (storeName: string, newName: string | null, hours: StoreHoursUpdate[]) =>
+    fetchApi<{ success: boolean; store_name: string }>(`/stores/${encodeURIComponent(storeName)}`, {
+      method: "PUT",
+      body: JSON.stringify({ store_name: newName, hours }),
+    }),
+
+  createStore: (storeName: string, hours: StoreHoursUpdate[]) =>
+    fetchApi<{ success: boolean; store_name: string }>("/stores", {
+      method: "POST",
+      body: JSON.stringify({ store_name: storeName, hours }),
+    }),
+
+  deleteStore: (storeName: string) =>
+    fetchApi<{ success: boolean }>(`/stores/${encodeURIComponent(storeName)}`, {
+      method: "DELETE",
+    }),
+
   getSchedules: () => fetchApi<Schedule[]>("/schedules"),
+
+  updateEmployeeAvailability: (employeeName: string, availability: AvailabilitySlot[]) =>
+    fetchApi<{ success: boolean; employee_name: string }>(`/employees/${encodeURIComponent(employeeName)}/availability`, {
+      method: "PUT",
+      body: JSON.stringify({ availability }),
+    }),
 
   getConfig: () => fetchApi<Config>("/config"),
 
@@ -93,12 +141,19 @@ export const api = {
   },
 };
 
+export interface AvailabilitySlot {
+  day_of_week: string;
+  start_time: string;
+  end_time: string;
+}
+
 export interface Employee {
   employee_name: string;
   hourly_rate: number;
   minimum_hours_per_week: number;
   minimum_hours: number;
   maximum_hours: number;
+  availability?: AvailabilitySlot[];
 }
 
 export interface EmployeeSchedule {
@@ -110,6 +165,13 @@ export interface EmployeeSchedule {
 export interface Store {
   week_no: number;
   store_name: string;
+  day_of_week: string;
+  start_time: string;
+  end_time: string;
+}
+
+export interface StoreHoursUpdate {
+  week_no: number;
   day_of_week: string;
   start_time: string;
   end_time: string;

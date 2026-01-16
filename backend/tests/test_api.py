@@ -198,3 +198,43 @@ def test_schedule_results_returns_none_when_no_current(client, mock_db):
 
     assert response.status_code == 200
     assert response.json() is None
+
+
+def test_update_employee_availability_success(client, mock_db):
+    """Test that PUT /employees/{name}/availability updates availability."""
+    mock_employee = MagicMock()
+    mock_employee.set = AsyncMock()
+    mock_db["EmployeeDoc"].find_one = AsyncMock(return_value=mock_employee)
+
+    response = client.put(
+        "/employees/Emma/availability",
+        json={
+            "availability": [
+                {"day_of_week": "Monday", "start_time": "09:00", "end_time": "17:00"},
+                {"day_of_week": "Tuesday", "start_time": "10:00", "end_time": "18:00"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["employee_name"] == "Emma"
+    mock_employee.set.assert_called_once()
+
+
+def test_update_employee_availability_not_found(client, mock_db):
+    """Test that PUT /employees/{name}/availability returns 404 for unknown employee."""
+    mock_db["EmployeeDoc"].find_one = AsyncMock(return_value=None)
+
+    response = client.put(
+        "/employees/Unknown/availability",
+        json={
+            "availability": [
+                {"day_of_week": "Monday", "start_time": "09:00", "end_time": "17:00"},
+            ]
+        },
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
