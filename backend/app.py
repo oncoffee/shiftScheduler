@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from model_run import main
@@ -17,6 +18,8 @@ from schemas import (
     ValidationWarning as ValidationWarningSchema,
     BatchUpdateRequest,
     BatchUpdateResponse,
+    ToggleLockRequest,
+    ToggleLockResponse,
 )
 from cost_calculator import (
     validate_schedule_change,
@@ -75,25 +78,66 @@ async def run_ep(pass_key: str) -> WeeklyScheduleResult:
     if pass_key != SOLVER_PASS_KEY:
         raise HTTPException(status_code=422, detail="Invalid Credentials")
 
-    result = main()
-    await _persist_schedule_result(result)
+    locked_shifts = []
+    current_schedule = await ScheduleRunDoc.find_one(ScheduleRunDoc.is_current == True)
+    if current_schedule:
+        for assignment in current_schedule.assignments:
+            if assignment.is_locked and assignment.total_hours > 0:
+                scheduled_periods = [
+                    p.period_index for p in assignment.periods if p.scheduled
+                ]
+                if scheduled_periods:
+                    locked_shifts.append({
+                        "employee_name": assignment.employee_name,
+                        "day_of_week": assignment.day_of_week,
+                        "periods": scheduled_periods,
+                    })
+
+    try:
+        result = main(locked_shifts=locked_shifts if locked_shifts else None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    await _persist_schedule_result(result, locked_shifts=locked_shifts if locked_shifts else None)
+
+    if locked_shifts:
+        locked_lookup = {}
+        for ls in locked_shifts:
+            key = (ls["employee_name"], ls["day_of_week"])
+            locked_lookup[key] = set(ls["periods"])
+
+        for schedule in result.schedules:
+            schedule_key = (schedule.employee_name, schedule.day_of_week)
+            if schedule_key in locked_lookup:
+                schedule.is_locked = True
 
     return result
 
 
-async def _persist_schedule_result(result: WeeklyScheduleResult):
+async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: list[dict] | None = None):
     await ScheduleRunDoc.find(ScheduleRunDoc.is_current == True).update_many(
         {"$set": {"is_current": False}}
     )
 
+    locked_lookup = {}
+    if locked_shifts:
+        for ls in locked_shifts:
+            key = (ls["employee_name"], ls["day_of_week"])
+            locked_lookup[key] = set(ls["periods"])
+
     assignments = []
     for schedule in result.schedules:
+        schedule_key = (schedule.employee_name, schedule.day_of_week)
+        is_schedule_locked = schedule_key in locked_lookup
+        locked_periods = locked_lookup.get(schedule_key, set())
+
         periods = [
             ShiftPeriodEmbed(
                 period_index=p.period_index,
                 start_time=p.start_time,
                 end_time=p.end_time,
                 scheduled=p.scheduled,
+                is_locked=p.period_index in locked_periods if p.scheduled else False,
             )
             for p in schedule.periods
         ]
@@ -105,6 +149,7 @@ async def _persist_schedule_result(result: WeeklyScheduleResult):
                 shift_start=schedule.shift_start,
                 shift_end=schedule.shift_end,
                 is_short_shift=schedule.is_short_shift,
+                is_locked=is_schedule_locked,
                 periods=periods,
             )
         )
@@ -168,6 +213,7 @@ def _schedule_run_to_result(schedule_run: ScheduleRunDoc) -> WeeklyScheduleResul
                 start_time=p.start_time,
                 end_time=p.end_time,
                 scheduled=p.scheduled,
+                is_locked=getattr(p, 'is_locked', False),
             )
             for p in assignment.periods
         ]
@@ -180,6 +226,7 @@ def _schedule_run_to_result(schedule_run: ScheduleRunDoc) -> WeeklyScheduleResul
                 shift_start=assignment.shift_start,
                 shift_end=assignment.shift_end,
                 is_short_shift=assignment.is_short_shift,
+                is_locked=getattr(assignment, 'is_locked', False),
             )
         )
 
@@ -501,7 +548,6 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
             )
         )
 
-    # Validate the change first
     target_employee = request.new_employee_name or request.employee_name
     is_valid, errors, _ = await validate_schedule_change(
         employee_name=target_employee,
@@ -509,6 +555,7 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
         proposed_start=request.new_shift_start,
         proposed_end=request.new_shift_end,
         current_schedules=current_schedules,
+        skip_availability_check=True,
     )
 
     if not is_valid:
@@ -693,4 +740,200 @@ async def batch_update_assignments(schedule_id: str, request: BatchUpdateRequest
         updated_schedule=current_result.updated_schedule,
         recalculated_cost=current_result.recalculated_cost,
         failed_updates=failed_updates,
+    )
+
+
+@app.patch("/schedule/{schedule_id}/lock", response_model=ToggleLockResponse)
+async def toggle_shift_lock(schedule_id: str, request: ToggleLockRequest):
+    from beanie import PydanticObjectId
+
+    try:
+        schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
+    except Exception:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    if not schedule_run:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    # Find and update the assignment
+    assignment_found = False
+    for assignment in schedule_run.assignments:
+        if assignment.employee_name == request.employee_name and assignment.day_of_week == request.day_of_week:
+            assignment.is_locked = request.is_locked
+            # Also update periods' is_locked status for scheduled periods
+            for period in assignment.periods:
+                if period.scheduled:
+                    period.is_locked = request.is_locked
+            assignment_found = True
+            break
+
+    if not assignment_found:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No assignment found for {request.employee_name} on {request.day_of_week}"
+        )
+
+    # Save to database
+    await schedule_run.set({
+        "assignments": schedule_run.assignments,
+        "last_edited_at": datetime.utcnow(),
+    })
+
+    # Return updated result
+    updated_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
+    result = _schedule_run_to_result(updated_run)
+
+    return ToggleLockResponse(
+        success=True,
+        updated_schedule=result,
+    )
+
+
+class DeleteShiftRequest(BaseModel):
+    employee_name: str
+    day_of_week: str
+
+
+class DeleteShiftResponse(BaseModel):
+    success: bool
+    updated_schedule: WeeklyScheduleResult
+
+
+@app.delete("/schedule/{schedule_id}/shift", response_model=DeleteShiftResponse)
+async def delete_shift(schedule_id: str, request: DeleteShiftRequest):
+    from beanie import PydanticObjectId
+
+    try:
+        schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
+    except Exception:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    if not schedule_run:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    # Find and clear the assignment
+    assignment_found = False
+    for assignment in schedule_run.assignments:
+        if assignment.employee_name == request.employee_name and assignment.day_of_week == request.day_of_week:
+            if assignment.is_locked:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot delete a locked shift. Unlock it first."
+                )
+            # Clear the shift by setting all periods to not scheduled
+            for period in assignment.periods:
+                period.scheduled = False
+                period.is_locked = False
+            assignment.total_hours = 0
+            assignment.shift_start = None
+            assignment.shift_end = None
+            assignment.is_short_shift = False
+            assignment.is_locked = False
+            assignment_found = True
+            break
+
+    if not assignment_found:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No assignment found for {request.employee_name} on {request.day_of_week}"
+        )
+
+    # Recalculate daily summary
+    from cost_calculator import recalculate_schedule_costs
+    from schemas import EmployeeDaySchedule as EDS, ShiftPeriod as SP, DayScheduleSummary as DSS, UnfilledPeriod as UP
+
+    # Convert to schemas for recalculation
+    current_schedules = []
+    for a in schedule_run.assignments:
+        periods = [
+            SP(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+                is_locked=p.is_locked,
+            )
+            for p in a.periods
+        ]
+        current_schedules.append(
+            EDS(
+                employee_name=a.employee_name,
+                day_of_week=a.day_of_week,
+                periods=periods,
+                total_hours=a.total_hours,
+                shift_start=a.shift_start,
+                shift_end=a.shift_end,
+                is_short_shift=a.is_short_shift,
+                is_locked=a.is_locked,
+            )
+        )
+
+    current_summaries = []
+    for summary in schedule_run.daily_summaries:
+        unfilled = [
+            UP(
+                period_index=u.period_index,
+                start_time=u.start_time,
+                end_time=u.end_time,
+                workers_needed=u.workers_needed,
+            )
+            for u in summary.unfilled_periods
+        ]
+        current_summaries.append(
+            DSS(
+                day_of_week=summary.day_of_week,
+                total_cost=summary.total_cost,
+                employees_scheduled=summary.employees_scheduled,
+                total_labor_hours=summary.total_labor_hours,
+                dummy_worker_cost=summary.dummy_worker_cost,
+                unfilled_periods=unfilled,
+            )
+        )
+
+    updated_summaries, total_cost, total_dummy, total_short_shift = await recalculate_schedule_costs(
+        current_schedules, current_summaries
+    )
+
+    # Update database
+    updated_daily_summaries = []
+    for summary in updated_summaries:
+        unfilled = [
+            UnfilledPeriodEmbed(
+                period_index=u.period_index,
+                start_time=u.start_time,
+                end_time=u.end_time,
+                workers_needed=u.workers_needed,
+            )
+            for u in summary.unfilled_periods
+        ]
+        updated_daily_summaries.append(
+            DailySummary(
+                day_of_week=summary.day_of_week,
+                total_cost=summary.total_cost,
+                employees_scheduled=summary.employees_scheduled,
+                total_labor_hours=summary.total_labor_hours,
+                dummy_worker_cost=summary.dummy_worker_cost,
+                unfilled_periods=unfilled,
+            )
+        )
+
+    has_warnings = total_dummy > 0 or total_short_shift > 0
+    await schedule_run.set({
+        "assignments": schedule_run.assignments,
+        "daily_summaries": updated_daily_summaries,
+        "total_weekly_cost": total_cost,
+        "total_dummy_worker_cost": total_dummy,
+        "total_short_shift_penalty": total_short_shift,
+        "has_warnings": has_warnings,
+        "is_edited": True,
+        "last_edited_at": datetime.utcnow(),
+    })
+
+    # Return updated result
+    updated_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
+    result = _schedule_run_to_result(updated_run)
+
+    return DeleteShiftResponse(
+        success=True,
+        updated_schedule=result,
     )

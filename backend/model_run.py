@@ -123,7 +123,7 @@ def extract_schedule_dataframe(model) -> pd.DataFrame:
     return df_wide[cols]
 
 
-def main() -> WeeklyScheduleResult:
+def main(locked_shifts: list[dict] | None = None) -> WeeklyScheduleResult:
     data_import.load_data()
     setup_logging()
 
@@ -197,11 +197,6 @@ def main() -> WeeklyScheduleResult:
         )
 
         for b in employees:
-            for t in timePeriods:
-                m.addConstr(avail[b, t] == employee_availability[b][t], f"availability_for_{b}-{t}")
-                m.addConstr(scheduled[b, t] <= avail[b, t], f"availability_constraint_for_{b}-{t}")
-
-        for b in employees:
             m.addConstr(
                 gp.quicksum([scheduled[b, t] for t in timePeriods]) <= maximum_periods,
                 name=f"max_daily_hours_for_{b}",
@@ -236,8 +231,38 @@ def main() -> WeeklyScheduleResult:
                 name=f"short_shift_penalty_{b}"
             )
 
+        locked_periods_set = set()
+        if locked_shifts:
+            for locked in locked_shifts:
+                if locked["day_of_week"] == day_of_week:
+                    emp = locked["employee_name"]
+                    if emp in employees:
+                        for period_idx in locked["periods"]:
+                            if period_idx < len(timePeriods):
+                                locked_periods_set.add((emp, period_idx))
+                        logging.info(f"Locked shift for {emp} on {day_of_week}: periods {locked['periods']}")
+
+        for b in employees:
+            for t in timePeriods:
+                t_idx = timePeriods.index(t)
+                is_locked = (b, t_idx) in locked_periods_set
+                if is_locked:
+                    m.addConstr(scheduled[b, t] == 1, name=f"locked_{b}_{t}")
+                else:
+                    m.addConstr(avail[b, t] == employee_availability[b][t_idx], f"availability_for_{b}-{t}")
+                    m.addConstr(scheduled[b, t] <= avail[b, t], f"availability_constraint_for_{b}-{t}")
+
         m.optimize()
         m.write("scheduler.lp")
+
+        if m.status == GRB.INFEASIBLE:
+            logging.error(f"Model infeasible for {day_of_week}. Computing IIS...")
+            m.computeIIS()
+            m.write("infeasible.ilp")
+            raise ValueError(f"Schedule is infeasible for {day_of_week}. Check locked shifts and availability.")
+
+        if m.status != GRB.OPTIMAL and m.status != GRB.SUBOPTIMAL:
+            raise ValueError(f"Solver failed for {day_of_week} with status {m.status}")
 
         day_dummy_cost = 0
         unfilled = []
