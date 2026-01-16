@@ -96,6 +96,8 @@ class ScheduleRunDoc(Document):
     status: str
     has_warnings: bool = False
     is_current: bool = False
+    is_edited: bool = False
+    last_edited_at: Optional[datetime] = None
     daily_summaries: list[DailySummary] = []
     assignments: list[Assignment] = []
 

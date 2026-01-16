@@ -42,4 +42,68 @@ export interface WeeklyScheduleResult {
   total_dummy_worker_cost: number;
   total_short_shift_penalty: number;
   has_warnings: boolean;
+  is_edited?: boolean;
+  last_edited_at?: string | null;
+}
+
+export type DragOperationType = "move" | "resize-start" | "resize-end" | "reassign";
+
+export interface DragOperation {
+  type: DragOperationType;
+  employee_name: string;
+  day_of_week: string;
+  original_start: string;
+  original_end: string;
+  new_start?: string;
+  new_end?: string;
+  new_employee_name?: string;
+}
+
+export interface ShiftEditRequest {
+  employee_name: string;
+  day_of_week: string;
+  new_shift_start: string;
+  new_shift_end: string;
+  new_employee_name?: string;
+}
+
+export interface ShiftEditResponse {
+  success: boolean;
+  updated_schedule: WeeklyScheduleResult;
+  recalculated_cost: number;
+}
+
+export interface ValidationError {
+  code: string;
+  message: string;
+}
+
+export interface ValidationWarning {
+  code: string;
+  message: string;
+}
+
+export interface ValidateChangeRequest {
+  employee_name: string;
+  day_of_week: string;
+  proposed_start: string;
+  proposed_end: string;
+}
+
+export interface ValidateChangeResponse {
+  is_valid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+}
+
+export interface ScheduleSnapshot {
+  schedules: EmployeeDaySchedule[];
+  daily_summaries: DayScheduleSummary[];
+  timestamp: number;
+}
+
+export interface DraggableShiftData {
+  shift: EmployeeDaySchedule;
+  employee_name: string;
+  day_of_week: string;
 }

@@ -1,6 +1,17 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useCallback } from "react";
 import { ChevronLeft, ChevronRight, AlertTriangle } from "lucide-react";
+import {
+  DndContext,
+  DragOverlay,
+  useSensor,
+  useSensors,
+  PointerSensor,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
 import type { EmployeeDaySchedule, DayScheduleSummary } from "@/types/schedule";
+import { DraggableShift, ShiftPreview } from "./DraggableShift";
+import { useScheduleEdit } from "@/hooks/useScheduleEdit";
 
 const DAYS_ORDER = [
   "Sunday",
@@ -35,6 +46,14 @@ const HOUR_SLOTS = Array.from({ length: 17 }, (_, i) => {
 interface WeeklyCalendarProps {
   schedules: EmployeeDaySchedule[];
   dailySummaries: DayScheduleSummary[];
+  isEditMode?: boolean;
+  onShiftUpdate?: (
+    employeeName: string,
+    dayOfWeek: string,
+    newStart: string,
+    newEnd: string,
+    newEmployeeName?: string
+  ) => void;
 }
 
 function parseTimeToHour(timeStr: string): number {
@@ -59,9 +78,22 @@ function formatTime(timeStr: string): string {
 export function WeeklyCalendar({
   schedules,
   dailySummaries,
+  isEditMode = false,
+  onShiftUpdate,
 }: WeeklyCalendarProps) {
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const selectedDay = DAYS_ORDER[selectedDayIndex];
+  const [activeShift, setActiveShift] = useState<EmployeeDaySchedule | null>(null);
+
+  const { calculateNewTimes, START_HOUR } = useScheduleEdit();
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    })
+  );
 
   const employees = useMemo(
     () => [...new Set(schedules.map((s) => s.employee_name))].sort(),
@@ -123,11 +155,71 @@ export function WeeklyCalendar({
   }, [daySummary]);
 
   const HOUR_HEIGHT = 60;
-  const START_HOUR = 6;
   const totalColumns = employees.length + (hasUnfilled ? 1 : 0);
 
   const prevDay = () => setSelectedDayIndex((i) => (i === 0 ? 6 : i - 1));
   const nextDay = () => setSelectedDayIndex((i) => (i === 6 ? 0 : i + 1));
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    const { active } = event;
+    const shiftData = active.data.current;
+    if (shiftData?.type === "shift") {
+      setActiveShift(shiftData.shift);
+    }
+  }, []);
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, delta } = event;
+      const shiftData = active.data.current;
+
+      if (shiftData?.type === "shift" && activeShift && onShiftUpdate) {
+        const { newStart, newEnd } = calculateNewTimes(activeShift, delta.y, "move");
+        onShiftUpdate(
+          activeShift.employee_name,
+          activeShift.day_of_week,
+          newStart,
+          newEnd
+        );
+      }
+
+      setActiveShift(null);
+    },
+    [activeShift, onShiftUpdate, calculateNewTimes]
+  );
+
+  const handleResizeStart = useCallback(
+    (shift: EmployeeDaySchedule, type: "resize-start" | "resize-end") => {
+      let startY = 0;
+
+      const handleMouseMove = (e: MouseEvent) => {
+        if (startY === 0) {
+          startY = e.clientY;
+        }
+      };
+
+      const handleMouseUp = (e: MouseEvent) => {
+        document.removeEventListener("mousemove", handleMouseMove);
+        document.removeEventListener("mouseup", handleMouseUp);
+
+        if (!onShiftUpdate || startY === 0) return;
+
+        const deltaY = e.clientY - startY;
+        const { newStart, newEnd } = calculateNewTimes(shift, deltaY, type);
+
+        onShiftUpdate(
+          shift.employee_name,
+          shift.day_of_week,
+          newStart,
+          newEnd
+        );
+      };
+
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+    },
+    [calculateNewTimes, onShiftUpdate]
+  );
 
   return (
     <div className="space-y-4">
@@ -171,147 +263,159 @@ export function WeeklyCalendar({
       </div>
 
       {/* Calendar grid */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        {/* Header - Employee names + Unfilled column */}
-        <div
-          className="grid border-b border-gray-200 bg-gray-50"
-          style={{ gridTemplateColumns: `70px repeat(${totalColumns}, minmax(100px, 1fr))` }}
-        >
-          <div className="p-3 text-xs text-gray-400 text-center">Time</div>
-          {employees.map((emp) => {
-            const color = employeeColorMap.get(emp)!;
-            const hasShift = shiftsByEmployee.get(emp) !== null;
-            return (
-              <div
-                key={emp}
-                className={`p-3 text-center border-l border-gray-200 ${!hasShift ? "opacity-40" : ""}`}
-              >
+      <DndContext
+        sensors={sensors}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+      >
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          {/* Header - Employee names + Unfilled column */}
+          <div
+            className="grid border-b border-gray-200 bg-gray-50"
+            style={{ gridTemplateColumns: `70px repeat(${totalColumns}, minmax(100px, 1fr))` }}
+          >
+            <div className="p-3 text-xs text-gray-400 text-center">Time</div>
+            {employees.map((emp) => {
+              const color = employeeColorMap.get(emp)!;
+              const hasShift = shiftsByEmployee.get(emp) !== null;
+              return (
                 <div
-                  className="inline-block w-2.5 h-2.5 rounded-full mr-1.5"
-                  style={{ backgroundColor: color }}
-                />
-                <span className="text-sm font-medium text-gray-700">{emp}</span>
+                  key={emp}
+                  className={`p-3 text-center border-l border-gray-200 ${!hasShift ? "opacity-40" : ""}`}
+                >
+                  <div
+                    className="inline-block w-2.5 h-2.5 rounded-full mr-1.5"
+                    style={{ backgroundColor: color }}
+                  />
+                  <span className="text-sm font-medium text-gray-700">{emp}</span>
+                </div>
+              );
+            })}
+            {hasUnfilled && (
+              <div className="p-3 text-center border-l border-red-200 bg-red-50">
+                <AlertTriangle className="inline-block w-3 h-3 text-red-500 mr-1.5" />
+                <span className="text-sm font-medium text-red-700">Unfilled</span>
               </div>
-            );
-          })}
-          {hasUnfilled && (
-            <div className="p-3 text-center border-l border-red-200 bg-red-50">
-              <AlertTriangle className="inline-block w-3 h-3 text-red-500 mr-1.5" />
-              <span className="text-sm font-medium text-red-700">Unfilled</span>
-            </div>
-          )}
-        </div>
-
-        {/* Time grid */}
-        <div
-          className="grid"
-          style={{ gridTemplateColumns: `70px repeat(${totalColumns}, minmax(100px, 1fr))` }}
-        >
-          {/* Time labels column */}
-          <div className="border-r border-gray-100">
-            {HOUR_SLOTS.map(({ hour, label }) => (
-              <div
-                key={hour}
-                className="h-[60px] flex items-start justify-end pr-3 text-xs text-gray-400 border-b border-gray-50"
-              >
-                {label}
-              </div>
-            ))}
+            )}
           </div>
 
-          {/* Employee columns */}
-          {employees.map((emp) => {
-            const shift = shiftsByEmployee.get(emp);
-            const color = employeeColorMap.get(emp)!;
+          {/* Time grid */}
+          <div
+            className="grid"
+            style={{ gridTemplateColumns: `70px repeat(${totalColumns}, minmax(100px, 1fr))` }}
+          >
+            {/* Time labels column */}
+            <div className="border-r border-gray-100">
+              {HOUR_SLOTS.map(({ hour, label }) => (
+                <div
+                  key={hour}
+                  className="h-[60px] flex items-start justify-end pr-3 text-xs text-gray-400 border-b border-gray-50"
+                >
+                  {label}
+                </div>
+              ))}
+            </div>
 
-            return (
+            {/* Employee columns */}
+            {employees.map((emp) => {
+              const shift = shiftsByEmployee.get(emp);
+              const color = employeeColorMap.get(emp)!;
+
+              return (
+                <div
+                  key={emp}
+                  className={`relative border-l border-gray-100 ${
+                    isEditMode ? "bg-blue-50/20" : ""
+                  }`}
+                  style={{ height: HOUR_SLOTS.length * HOUR_HEIGHT }}
+                >
+                  {/* Hour grid lines */}
+                  {HOUR_SLOTS.map(({ hour }) => (
+                    <div
+                      key={hour}
+                      className="absolute w-full border-b border-gray-50"
+                      style={{ top: (hour - START_HOUR + 1) * HOUR_HEIGHT }}
+                    />
+                  ))}
+
+                  {/* Shift block */}
+                  {shift && (
+                    <DraggableShift
+                      shift={shift}
+                      color={color}
+                      top={(parseTimeToHour(shift.shift_start!) - START_HOUR) * HOUR_HEIGHT}
+                      height={
+                        (parseTimeToHour(shift.shift_end!) -
+                          parseTimeToHour(shift.shift_start!)) *
+                        HOUR_HEIGHT
+                      }
+                      disabled={!isEditMode}
+                      onResizeStart={handleResizeStart}
+                      formatTime={formatTime}
+                    />
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Unfilled column */}
+            {hasUnfilled && daySummary && (
               <div
-                key={emp}
-                className="relative border-l border-gray-100"
+                className="relative border-l border-red-200 bg-red-50/30"
                 style={{ height: HOUR_SLOTS.length * HOUR_HEIGHT }}
               >
                 {/* Hour grid lines */}
                 {HOUR_SLOTS.map(({ hour }) => (
                   <div
                     key={hour}
-                    className="absolute w-full border-b border-gray-50"
+                    className="absolute w-full border-b border-red-100"
                     style={{ top: (hour - START_HOUR + 1) * HOUR_HEIGHT }}
                   />
                 ))}
 
-                {/* Shift block */}
-                {shift && (
-                  <div
-                    className={`absolute left-2 right-2 rounded-lg px-3 py-2 cursor-default hover:shadow-lg transition-shadow ${
-                      shift.is_short_shift ? "border-2 border-dashed border-orange-400" : ""
-                    }`}
-                    style={{
-                      top: (parseTimeToHour(shift.shift_start!) - START_HOUR) * HOUR_HEIGHT + 2,
-                      height: (parseTimeToHour(shift.shift_end!) - parseTimeToHour(shift.shift_start!)) * HOUR_HEIGHT - 4,
-                      backgroundColor: shift.is_short_shift ? "#FED7AA" : color,
-                    }}
-                  >
-                    <div className="flex items-center gap-1">
-                      <span className="text-sm font-semibold text-gray-800">{emp}</span>
-                      {shift.is_short_shift && (
-                        <AlertTriangle className="w-3 h-3 text-orange-500" />
-                      )}
+                {/* Unfilled period blocks (merged) */}
+                {mergedUnfilledPeriods.map((period, idx) => {
+                  const startHour = parseTimeToHour(period.start_time);
+                  const endHour = parseTimeToHour(period.end_time);
+                  const height = (endHour - startHour) * HOUR_HEIGHT - 4;
+                  return (
+                    <div
+                      key={idx}
+                      className="absolute left-2 right-2 rounded-lg px-2 py-2 bg-red-100 border-2 border-dashed border-red-300 cursor-default"
+                      style={{
+                        top: (startHour - START_HOUR) * HOUR_HEIGHT + 2,
+                        height,
+                      }}
+                    >
+                      <div className="text-sm font-semibold text-red-700">
+                        {period.workers_needed} needed
+                      </div>
+                      <div className="text-xs text-red-600">
+                        {formatTime(period.start_time)} - {formatTime(period.end_time)}
+                      </div>
                     </div>
-                    <div className="text-xs text-gray-600 mt-0.5">
-                      {formatTime(shift.shift_start!)} - {formatTime(shift.shift_end!)}
-                    </div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      {shift.total_hours}h
-                      {shift.is_short_shift && <span className="text-orange-500 ml-1">(short)</span>}
-                    </div>
-                  </div>
-                )}
+                  );
+                })}
               </div>
-            );
-          })}
-
-          {/* Unfilled column */}
-          {hasUnfilled && daySummary && (
-            <div
-              className="relative border-l border-red-200 bg-red-50/30"
-              style={{ height: HOUR_SLOTS.length * HOUR_HEIGHT }}
-            >
-              {/* Hour grid lines */}
-              {HOUR_SLOTS.map(({ hour }) => (
-                <div
-                  key={hour}
-                  className="absolute w-full border-b border-red-100"
-                  style={{ top: (hour - START_HOUR + 1) * HOUR_HEIGHT }}
-                />
-              ))}
-
-              {/* Unfilled period blocks (merged) */}
-              {mergedUnfilledPeriods.map((period, idx) => {
-                const startHour = parseTimeToHour(period.start_time);
-                const endHour = parseTimeToHour(period.end_time);
-                const height = (endHour - startHour) * HOUR_HEIGHT - 4;
-                return (
-                  <div
-                    key={idx}
-                    className="absolute left-2 right-2 rounded-lg px-2 py-2 bg-red-100 border-2 border-dashed border-red-300 cursor-default"
-                    style={{
-                      top: (startHour - START_HOUR) * HOUR_HEIGHT + 2,
-                      height,
-                    }}
-                  >
-                    <div className="text-sm font-semibold text-red-700">
-                      {period.workers_needed} needed
-                    </div>
-                    <div className="text-xs text-red-600">
-                      {formatTime(period.start_time)} - {formatTime(period.end_time)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      </div>
+
+        <DragOverlay>
+          {activeShift && (
+            <ShiftPreview
+              shift={activeShift}
+              color={employeeColorMap.get(activeShift.employee_name) || EMPLOYEE_COLORS[0]}
+              height={
+                (parseTimeToHour(activeShift.shift_end!) -
+                  parseTimeToHour(activeShift.shift_start!)) *
+                HOUR_HEIGHT
+              }
+              formatTime={formatTime}
+            />
+          )}
+        </DragOverlay>
+      </DndContext>
 
       {/* Summary */}
       <div className="flex items-center justify-end text-sm">

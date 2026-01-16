@@ -1,4 +1,10 @@
-import type { WeeklyScheduleResult } from "@/types/schedule";
+import type {
+  WeeklyScheduleResult,
+  ShiftEditRequest,
+  ShiftEditResponse,
+  ValidateChangeRequest,
+  ValidateChangeResponse,
+} from "@/types/schedule";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -39,6 +45,29 @@ export const api = {
 
   getScheduleById: (id: string) =>
     fetchApi<WeeklyScheduleResult>(`/schedule/${id}`),
+
+  validateChange: (scheduleId: string, request: ValidateChangeRequest) =>
+    fetchApi<ValidateChangeResponse>(`/schedule/${scheduleId}/validate`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    }),
+
+  updateAssignment: (scheduleId: string, request: ShiftEditRequest) =>
+    fetchApi<ShiftEditResponse>(`/schedule/${scheduleId}/assignment`, {
+      method: "PATCH",
+      body: JSON.stringify(request),
+    }),
+
+  batchUpdateAssignments: (scheduleId: string, updates: ShiftEditRequest[]) =>
+    fetchApi<{
+      success: boolean;
+      updated_schedule: WeeklyScheduleResult;
+      recalculated_cost: number;
+      failed_updates: { employee_name: string; day_of_week: string; error: string }[];
+    }>(`/schedule/${scheduleId}/batch-update`, {
+      method: "POST",
+      body: JSON.stringify({ updates }),
+    }),
 
   getLogs: () => fetchApi<string>("/logs"),
 

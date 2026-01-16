@@ -7,7 +7,23 @@ from dotenv import load_dotenv
 
 from model_run import main
 import data_import
-from schemas import WeeklyScheduleResult
+from schemas import (
+    WeeklyScheduleResult,
+    ShiftUpdateRequest,
+    ShiftUpdateResponse,
+    ValidateChangeRequest,
+    ValidateChangeResponse,
+    ValidationError as ValidationErrorSchema,
+    ValidationWarning as ValidationWarningSchema,
+    BatchUpdateRequest,
+    BatchUpdateResponse,
+)
+from cost_calculator import (
+    validate_schedule_change,
+    recalculate_schedule_costs,
+    update_assignment_times,
+    get_config as get_solver_config,
+)
 from db import (
     init_db,
     EmployeeDoc,
@@ -200,6 +216,8 @@ def _schedule_run_to_result(schedule_run: ScheduleRunDoc) -> WeeklyScheduleResul
         total_dummy_worker_cost=schedule_run.total_dummy_worker_cost,
         total_short_shift_penalty=schedule_run.total_short_shift_penalty,
         has_warnings=schedule_run.has_warnings,
+        is_edited=schedule_run.is_edited,
+        last_edited_at=schedule_run.last_edited_at.isoformat() if schedule_run.last_edited_at else None,
     )
 
 
@@ -369,3 +387,310 @@ async def update_config(
         "min_shift_hours": config.min_shift_hours,
         "max_daily_hours": config.max_daily_hours,
     }
+
+
+@app.post("/schedule/{schedule_id}/validate", response_model=ValidateChangeResponse)
+async def validate_change(schedule_id: str, request: ValidateChangeRequest):
+    from beanie import PydanticObjectId
+    from schemas import EmployeeDaySchedule as EDS, ShiftPeriod as SP
+
+    try:
+        schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
+    except Exception:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    if not schedule_run:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    # Convert assignments to EmployeeDaySchedule for validation
+    current_schedules = []
+    for assignment in schedule_run.assignments:
+        periods = [
+            SP(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+            )
+            for p in assignment.periods
+        ]
+        current_schedules.append(
+            EDS(
+                employee_name=assignment.employee_name,
+                day_of_week=assignment.day_of_week,
+                periods=periods,
+                total_hours=assignment.total_hours,
+                shift_start=assignment.shift_start,
+                shift_end=assignment.shift_end,
+                is_short_shift=assignment.is_short_shift,
+            )
+        )
+
+    is_valid, errors, warnings = await validate_schedule_change(
+        employee_name=request.employee_name,
+        day_of_week=request.day_of_week,
+        proposed_start=request.proposed_start,
+        proposed_end=request.proposed_end,
+        current_schedules=current_schedules,
+    )
+
+    return ValidateChangeResponse(
+        is_valid=is_valid,
+        errors=[ValidationErrorSchema(code=e.code, message=e.message) for e in errors],
+        warnings=[ValidationWarningSchema(code=w.code, message=w.message) for w in warnings],
+    )
+
+
+@app.patch("/schedule/{schedule_id}/assignment", response_model=ShiftUpdateResponse)
+async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
+    from beanie import PydanticObjectId
+    from schemas import EmployeeDaySchedule as EDS, ShiftPeriod as SP, DayScheduleSummary as DSS, UnfilledPeriod as UP
+
+    try:
+        schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
+    except Exception:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    if not schedule_run:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    # Convert assignments to EmployeeDaySchedule
+    current_schedules = []
+    for assignment in schedule_run.assignments:
+        periods = [
+            SP(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+            )
+            for p in assignment.periods
+        ]
+        current_schedules.append(
+            EDS(
+                employee_name=assignment.employee_name,
+                day_of_week=assignment.day_of_week,
+                periods=periods,
+                total_hours=assignment.total_hours,
+                shift_start=assignment.shift_start,
+                shift_end=assignment.shift_end,
+                is_short_shift=assignment.is_short_shift,
+            )
+        )
+
+    # Convert daily summaries
+    current_summaries = []
+    for summary in schedule_run.daily_summaries:
+        unfilled = [
+            UP(
+                period_index=u.period_index,
+                start_time=u.start_time,
+                end_time=u.end_time,
+                workers_needed=u.workers_needed,
+            )
+            for u in summary.unfilled_periods
+        ]
+        current_summaries.append(
+            DSS(
+                day_of_week=summary.day_of_week,
+                total_cost=summary.total_cost,
+                employees_scheduled=summary.employees_scheduled,
+                total_labor_hours=summary.total_labor_hours,
+                dummy_worker_cost=summary.dummy_worker_cost,
+                unfilled_periods=unfilled,
+            )
+        )
+
+    # Validate the change first
+    target_employee = request.new_employee_name or request.employee_name
+    is_valid, errors, _ = await validate_schedule_change(
+        employee_name=target_employee,
+        day_of_week=request.day_of_week,
+        proposed_start=request.new_shift_start,
+        proposed_end=request.new_shift_end,
+        current_schedules=current_schedules,
+    )
+
+    if not is_valid:
+        error_messages = "; ".join([e.message for e in errors])
+        raise HTTPException(status_code=400, detail=f"Invalid schedule change: {error_messages}")
+
+    # Get config for update
+    config = await get_solver_config()
+
+    # Find and update the schedule
+    updated_schedules = []
+    schedule_found = False
+
+    for schedule in current_schedules:
+        if schedule.employee_name == request.employee_name and schedule.day_of_week == request.day_of_week:
+            schedule_found = True
+
+            if request.new_employee_name and request.new_employee_name != request.employee_name:
+                # Reassigning to different employee - clear original
+                updated_schedule = update_assignment_times(schedule, "00:00", "00:00", config)
+                updated_schedules.append(updated_schedule)
+
+                # Find or create target employee's schedule for that day
+                target_found = False
+                for target_schedule in current_schedules:
+                    if target_schedule.employee_name == request.new_employee_name and target_schedule.day_of_week == request.day_of_week:
+                        target_found = True
+                        # Skip here, will update in main loop
+                        break
+
+                if not target_found:
+                    # Need to create a new schedule entry for target employee
+                    # Copy periods from the original schedule but mark none as scheduled
+                    new_periods = [
+                        SP(
+                            period_index=p.period_index,
+                            start_time=p.start_time,
+                            end_time=p.end_time,
+                            scheduled=False,
+                        )
+                        for p in schedule.periods
+                    ]
+                    new_schedule = EDS(
+                        employee_name=request.new_employee_name,
+                        day_of_week=request.day_of_week,
+                        periods=new_periods,
+                        total_hours=0,
+                        shift_start=None,
+                        shift_end=None,
+                        is_short_shift=False,
+                    )
+                    new_schedule = update_assignment_times(new_schedule, request.new_shift_start, request.new_shift_end, config)
+                    updated_schedules.append(new_schedule)
+            else:
+                # Same employee, just update times
+                updated_schedule = update_assignment_times(schedule, request.new_shift_start, request.new_shift_end, config)
+                updated_schedules.append(updated_schedule)
+        elif request.new_employee_name and schedule.employee_name == request.new_employee_name and schedule.day_of_week == request.day_of_week:
+            # This is the target employee for reassignment
+            updated_schedule = update_assignment_times(schedule, request.new_shift_start, request.new_shift_end, config)
+            updated_schedules.append(updated_schedule)
+        else:
+            updated_schedules.append(schedule)
+
+    if not schedule_found:
+        raise HTTPException(status_code=404, detail=f"No schedule found for {request.employee_name} on {request.day_of_week}")
+
+    # Recalculate costs
+    updated_summaries, total_cost, total_dummy, total_short_shift = await recalculate_schedule_costs(
+        updated_schedules, current_summaries
+    )
+
+    # Update database
+    updated_assignments = []
+    for schedule in updated_schedules:
+        periods = [
+            ShiftPeriodEmbed(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+            )
+            for p in schedule.periods
+        ]
+        updated_assignments.append(
+            Assignment(
+                employee_name=schedule.employee_name,
+                day_of_week=schedule.day_of_week,
+                total_hours=schedule.total_hours,
+                shift_start=schedule.shift_start,
+                shift_end=schedule.shift_end,
+                is_short_shift=schedule.is_short_shift,
+                periods=periods,
+            )
+        )
+
+    updated_daily_summaries = []
+    for summary in updated_summaries:
+        unfilled = [
+            UnfilledPeriodEmbed(
+                period_index=u.period_index,
+                start_time=u.start_time,
+                end_time=u.end_time,
+                workers_needed=u.workers_needed,
+            )
+            for u in summary.unfilled_periods
+        ]
+        updated_daily_summaries.append(
+            DailySummary(
+                day_of_week=summary.day_of_week,
+                total_cost=summary.total_cost,
+                employees_scheduled=summary.employees_scheduled,
+                total_labor_hours=summary.total_labor_hours,
+                dummy_worker_cost=summary.dummy_worker_cost,
+                unfilled_periods=unfilled,
+            )
+        )
+
+    # Save to database
+    has_warnings = total_dummy > 0 or total_short_shift > 0
+    await schedule_run.set({
+        "assignments": updated_assignments,
+        "daily_summaries": updated_daily_summaries,
+        "total_weekly_cost": total_cost,
+        "total_dummy_worker_cost": total_dummy,
+        "total_short_shift_penalty": total_short_shift,
+        "has_warnings": has_warnings,
+        "is_edited": True,
+        "last_edited_at": datetime.utcnow(),
+    })
+
+    # Return updated result
+    updated_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
+    result = _schedule_run_to_result(updated_run)
+
+    return ShiftUpdateResponse(
+        success=True,
+        updated_schedule=result,
+        recalculated_cost=total_cost,
+    )
+
+
+@app.post("/schedule/{schedule_id}/batch-update", response_model=BatchUpdateResponse)
+async def batch_update_assignments(schedule_id: str, request: BatchUpdateRequest):
+    from beanie import PydanticObjectId
+
+    try:
+        schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
+    except Exception:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    if not schedule_run:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    failed_updates = []
+    current_result = None
+
+    # Apply each update sequentially
+    for update in request.updates:
+        try:
+            result = await update_assignment(schedule_id, update)
+            current_result = result
+        except HTTPException as e:
+            failed_updates.append({
+                "employee_name": update.employee_name,
+                "day_of_week": update.day_of_week,
+                "error": e.detail,
+            })
+
+    if current_result is None:
+        # All updates failed, return current state
+        result = _schedule_run_to_result(schedule_run)
+        return BatchUpdateResponse(
+            success=False,
+            updated_schedule=result,
+            recalculated_cost=schedule_run.total_weekly_cost,
+            failed_updates=failed_updates,
+        )
+
+    return BatchUpdateResponse(
+        success=len(failed_updates) == 0,
+        updated_schedule=current_result.updated_schedule,
+        recalculated_cost=current_result.recalculated_cost,
+        failed_updates=failed_updates,
+    )

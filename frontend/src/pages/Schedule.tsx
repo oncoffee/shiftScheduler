@@ -1,37 +1,59 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Play, Loader2, CheckCircle, XCircle, RefreshCw } from "lucide-react";
+import { Play, Loader2, CheckCircle, XCircle, RefreshCw, Edit3 } from "lucide-react";
 import { api } from "@/api/client";
-import { WeeklyCalendar } from "@/components/schedule";
+import { WeeklyCalendar, EditModeToolbar } from "@/components/schedule";
+import {
+  ScheduleEditProvider,
+  useScheduleEditContext,
+} from "@/contexts/ScheduleEditContext";
 import type { WeeklyScheduleResult } from "@/types/schedule";
 
 type SolverStatus = "idle" | "running" | "success" | "error";
 
-export function Schedule() {
+function ScheduleContent() {
   const [status, setStatus] = useState<SolverStatus>("idle");
   const [message, setMessage] = useState<string>("");
   const [scheduleResult, setScheduleResult] =
     useState<WeeklyScheduleResult | null>(null);
+  const [scheduleId, setScheduleId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function loadCachedSchedule() {
-      try {
-        const result = await api.getScheduleResults();
-        if (result) {
-          setScheduleResult(result);
-          setStatus("success");
+  const {
+    isEditMode,
+    localSchedules,
+    localSummaries,
+    updateLocalShift,
+    setScheduleData,
+  } = useScheduleEditContext();
+
+  const loadCachedSchedule = useCallback(async () => {
+    try {
+      // Get the current schedule
+      const result = await api.getScheduleResults();
+      if (result) {
+        setScheduleResult(result);
+        setStatus("success");
+
+        // Get the schedule ID from history
+        const history = await api.getScheduleHistory(1, 0);
+        if (history.length > 0 && history[0].is_current) {
+          setScheduleId(history[0].id);
+          setScheduleData(result, history[0].id);
         }
-      } catch (e) {
-        void e;
-      } finally {
-        setLoading(false);
       }
+    } catch (e) {
+      void e;
+    } finally {
+      setLoading(false);
     }
+  }, [setScheduleData]);
+
+  useEffect(() => {
     loadCachedSchedule();
-  }, []);
+  }, [loadCachedSchedule]);
 
   async function runSolver() {
     setStatus("running");
@@ -42,11 +64,35 @@ export function Schedule() {
       setScheduleResult(result);
       setStatus("success");
       setMessage("Solver completed successfully!");
+
+      // Get the new schedule ID
+      const history = await api.getScheduleHistory(1, 0);
+      if (history.length > 0) {
+        setScheduleId(history[0].id);
+        setScheduleData(result, history[0].id);
+      }
     } catch (err) {
       setStatus("error");
       setMessage(err instanceof Error ? err.message : "An error occurred");
     }
   }
+
+  const handleShiftUpdate = useCallback(
+    (
+      employeeName: string,
+      dayOfWeek: string,
+      newStart: string,
+      newEnd: string,
+      newEmployeeName?: string
+    ) => {
+      updateLocalShift(employeeName, dayOfWeek, newStart, newEnd, newEmployeeName);
+    },
+    [updateLocalShift]
+  );
+
+  // Use local schedules when in edit mode, otherwise use the original
+  const displaySchedules = isEditMode ? localSchedules : scheduleResult?.schedules ?? [];
+  const displaySummaries = isEditMode ? localSummaries : scheduleResult?.daily_summaries ?? [];
 
   return (
     <div className="space-y-8">
@@ -71,7 +117,7 @@ export function Schedule() {
           <div className="flex items-center gap-4">
             <Button
               onClick={runSolver}
-              disabled={status === "running"}
+              disabled={status === "running" || isEditMode}
               size="lg"
             >
               {status === "running" ? (
@@ -124,15 +170,23 @@ export function Schedule() {
               <p className="text-sm text-muted-foreground mt-1">
                 Week {scheduleResult.week_no} - {scheduleResult.store_name} |
                 Generated: {new Date(scheduleResult.generated_at).toLocaleString()}
+                {scheduleResult.is_edited && scheduleResult.last_edited_at && (
+                  <span className="ml-2 text-amber-600">
+                    (Edited: {new Date(scheduleResult.last_edited_at).toLocaleString()})
+                  </span>
+                )}
               </p>
             )}
           </div>
-          {scheduleResult && (
-            <Button variant="outline" size="sm" onClick={runSolver}>
-              <RefreshCw className="h-4 w-4 mr-1" />
-              Regenerate
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {scheduleResult && scheduleId && <EditModeToolbar />}
+            {scheduleResult && !isEditMode && (
+              <Button variant="outline" size="sm" onClick={runSolver}>
+                <RefreshCw className="h-4 w-4 mr-1" />
+                Regenerate
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -154,10 +208,26 @@ export function Schedule() {
                     {scheduleResult.status}
                   </span>
                 </div>
+                {scheduleResult.is_edited && (
+                  <div className="px-3 py-2 bg-amber-50 text-amber-700 rounded-md flex items-center gap-1">
+                    <Edit3 className="h-3 w-3" />
+                    <span className="font-medium">Manually Edited</span>
+                  </div>
+                )}
               </div>
+
+              {isEditMode && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
+                  <strong>Edit Mode:</strong> Drag shifts up/down to change times, or resize by dragging the top/bottom edges.
+                  Press <kbd className="px-1.5 py-0.5 bg-blue-100 rounded text-xs">Ctrl+Z</kbd> to undo.
+                </div>
+              )}
+
               <WeeklyCalendar
-                schedules={scheduleResult.schedules}
-                dailySummaries={scheduleResult.daily_summaries}
+                schedules={displaySchedules}
+                dailySummaries={displaySummaries}
+                isEditMode={isEditMode}
+                onShiftUpdate={handleShiftUpdate}
               />
             </div>
           ) : (
@@ -169,5 +239,13 @@ export function Schedule() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+export function Schedule() {
+  return (
+    <ScheduleEditProvider>
+      <ScheduleContent />
+    </ScheduleEditProvider>
   );
 }
