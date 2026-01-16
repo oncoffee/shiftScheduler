@@ -14,10 +14,38 @@ def parse_time_to_minutes(time_str: str) -> int:
     return int(parts[0]) * 60 + int(parts[1])
 
 
-def get_minimum_workers(day_of_week: str) -> list[int]:
-    if day_of_week in ("Saturday", "Sunday"):
-        return [2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
-    return [2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+def get_minimum_workers(
+    day_of_week: str,
+    staffing_requirements: list[dict] | None = None,
+    store_start_minutes: int = 6 * 60,
+    store_end_minutes: int = 24 * 60,
+    default_min: int = 2
+) -> list[int]:
+    if staffing_requirements is None:
+        if day_of_week in ("Saturday", "Sunday"):
+            return [2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+        return [2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+
+    day_type = "weekend" if day_of_week in ("Saturday", "Sunday") else "weekday"
+    relevant_reqs = [r for r in staffing_requirements if r.get("day_type") == day_type]
+
+    num_periods = (store_end_minutes - store_start_minutes) // 30
+    minimum_workers = []
+
+    for period_idx in range(num_periods):
+        period_start = store_start_minutes + (period_idx * 30)
+
+        min_staff = default_min
+        for req in relevant_reqs:
+            req_start = parse_time_to_minutes(req["start_time"])
+            req_end = parse_time_to_minutes(req["end_time"])
+            if req_start <= period_start < req_end:
+                min_staff = req["min_staff"]
+                break
+
+        minimum_workers.append(min_staff)
+
+    return minimum_workers
 
 
 async def get_employee_hourly_rate(employee_name: str) -> float:
@@ -47,9 +75,10 @@ async def get_config() -> dict:
 async def calculate_day_cost(
     day_schedules: list[EmployeeDaySchedule],
     day_of_week: str,
+    staffing_requirements: list[dict] | None = None,
 ) -> tuple[float, float, float, list[UnfilledPeriod]]:
     config = await get_config()
-    minimum_workers = get_minimum_workers(day_of_week)
+    minimum_workers = get_minimum_workers(day_of_week, staffing_requirements)
 
     labor_cost = 0.0
     short_shift_penalty = 0.0
@@ -108,6 +137,7 @@ async def calculate_day_cost(
 async def recalculate_schedule_costs(
     schedules: list[EmployeeDaySchedule],
     daily_summaries: list[DayScheduleSummary],
+    staffing_requirements: list[dict] | None = None,
 ) -> tuple[list[DayScheduleSummary], float, float, float]:
     updated_summaries = []
     total_weekly_cost = 0.0
@@ -126,7 +156,7 @@ async def recalculate_schedule_costs(
         day_schedules = schedules_by_day.get(day, [])
 
         total_cost, labor_cost, dummy_cost, short_shift_penalty, unfilled = await calculate_day_cost(
-            day_schedules, day
+            day_schedules, day, staffing_requirements
         )
 
         employees_scheduled = sum(1 for s in day_schedules if s.total_hours > 0)

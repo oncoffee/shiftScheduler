@@ -117,6 +117,15 @@ export const api = {
       method: "DELETE",
     }),
 
+  getStoreStaffing: (storeName: string) =>
+    fetchApi<StaffingRequirement[]>(`/stores/${encodeURIComponent(storeName)}/staffing`),
+
+  updateStoreStaffing: (storeName: string, requirements: StaffingRequirement[]) =>
+    fetchApi<{ success: boolean; store_name: string }>(`/stores/${encodeURIComponent(storeName)}/staffing`, {
+      method: "PUT",
+      body: JSON.stringify({ requirements }),
+    }),
+
   getSchedules: () => fetchApi<Schedule[]>("/schedules"),
 
   updateEmployeeAvailability: (employeeName: string, availability: AvailabilitySlot[]) =>
@@ -175,6 +184,13 @@ export interface StoreHoursUpdate {
   day_of_week: string;
   start_time: string;
   end_time: string;
+}
+
+export interface StaffingRequirement {
+  day_type: string;
+  start_time: string;
+  end_time: string;
+  min_staff: number;
 }
 
 export interface Schedule {

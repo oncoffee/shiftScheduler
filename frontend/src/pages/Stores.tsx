@@ -2,9 +2,9 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { api, type Store, type StoreHoursUpdate } from "@/api/client";
+import { api, type Store, type StoreHoursUpdate, type StaffingRequirement } from "@/api/client";
 import { useAsyncData } from "@/hooks/useAsyncData";
-import { StoreEditModal } from "@/components/stores";
+import { StoreEditModal, StaffingRequirementsEditor } from "@/components/stores";
 import { TimeRangeSlider } from "@/components/stores/TimeRangeSlider";
 import { Plus, Pencil, Trash2, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
@@ -50,18 +50,31 @@ interface StoreCardProps {
   onEdit: () => void;
   onDelete: () => void;
   onHoursChange: (hours: Record<string, { start_time: string; end_time: string } | null>) => Promise<void>;
+  onStaffingChange: (requirements: StaffingRequirement[]) => Promise<void>;
 }
 
-function StoreCard({ store, onEdit, onDelete, onHoursChange }: StoreCardProps) {
+function StoreCard({ store, onEdit, onDelete, onHoursChange, onStaffingChange }: StoreCardProps) {
   const [localHours, setLocalHours] = useState(store.hours);
+  const [staffingRequirements, setStaffingRequirements] = useState<StaffingRequirement[]>([]);
   const [saving, setSaving] = useState(false);
+  const [loadingStaffing, setLoadingStaffing] = useState(true);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const staffingSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingHoursRef = useRef<Record<string, { start_time: string; end_time: string }> | null>(null);
+  const pendingStaffingRef = useRef<StaffingRequirement[] | null>(null);
 
-  // Reset local state when store prop changes (after save completes)
   useEffect(() => {
     setLocalHours(store.hours);
   }, [store]);
+
+  useEffect(() => {
+    api.getStoreStaffing(store.store_name).then((data) => {
+      setStaffingRequirements(data);
+      setLoadingStaffing(false);
+    }).catch(() => {
+      setLoadingStaffing(false);
+    });
+  }, [store.store_name]);
 
   const saveChanges = useCallback(async () => {
     if (!pendingHoursRef.current) return;
@@ -79,6 +92,18 @@ function StoreCard({ store, onEdit, onDelete, onHoursChange }: StoreCardProps) {
     }
   }, [onHoursChange]);
 
+  const saveStaffingChanges = useCallback(async () => {
+    if (!pendingStaffingRef.current) return;
+
+    setSaving(true);
+    try {
+      await onStaffingChange(pendingStaffingRef.current);
+      pendingStaffingRef.current = null;
+    } finally {
+      setSaving(false);
+    }
+  }, [onStaffingChange]);
+
   const handleDayChange = useCallback(
     (day: string, startTime: string | null, endTime: string | null) => {
       setLocalHours((prev) => {
@@ -92,7 +117,6 @@ function StoreCard({ store, onEdit, onDelete, onHoursChange }: StoreCardProps) {
         return newHours;
       });
 
-      // Debounced auto-save
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
       }
@@ -103,12 +127,25 @@ function StoreCard({ store, onEdit, onDelete, onHoursChange }: StoreCardProps) {
     [saveChanges]
   );
 
-  // Cleanup timeout on unmount
+  const handleStaffingChange = useCallback(
+    (requirements: StaffingRequirement[]) => {
+      setStaffingRequirements(requirements);
+      pendingStaffingRef.current = requirements;
+
+      if (staffingSaveTimeoutRef.current) {
+        clearTimeout(staffingSaveTimeoutRef.current);
+      }
+      staffingSaveTimeoutRef.current = setTimeout(() => {
+        saveStaffingChanges();
+      }, 800);
+    },
+    [saveStaffingChanges]
+  );
+
   useEffect(() => {
     return () => {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      if (staffingSaveTimeoutRef.current) clearTimeout(staffingSaveTimeoutRef.current);
     };
   }, []);
 
@@ -148,24 +185,37 @@ function StoreCard({ store, onEdit, onDelete, onHoursChange }: StoreCardProps) {
           </div>
         </div>
       </CardHeader>
-      <CardContent>
-        <div className="flex justify-around gap-2 py-2">
-          {DAYS_OF_WEEK.map((day, idx) => {
-            const hours = localHours[day];
-            return (
-              <TimeRangeSlider
-                key={day}
-                day={SHORT_DAYS[idx]}
-                startTime={hours?.start_time || null}
-                endTime={hours?.end_time || null}
-                onChange={(start, end) => handleDayChange(day, start, end)}
-              />
-            );
-          })}
+      <CardContent className="space-y-6">
+        <div>
+          <div className="flex justify-around gap-2 py-2">
+            {DAYS_OF_WEEK.map((day, idx) => {
+              const hours = localHours[day];
+              return (
+                <TimeRangeSlider
+                  key={day}
+                  day={SHORT_DAYS[idx]}
+                  startTime={hours?.start_time || null}
+                  endTime={hours?.end_time || null}
+                  onChange={(start, end) => handleDayChange(day, start, end)}
+                />
+              );
+            })}
+          </div>
+          <p className="text-xs text-gray-400 text-center mt-4">
+            Drag sliders to adjust hours. Gray bars are inactive days.
+          </p>
         </div>
-        <p className="text-xs text-gray-400 text-center mt-4">
-          Drag sliders to adjust hours. Gray bars are inactive days - drag to activate.
-        </p>
+
+        <div className="border-t pt-4">
+          {loadingStaffing ? (
+            <p className="text-xs text-gray-400 text-center">Loading staffing requirements...</p>
+          ) : (
+            <StaffingRequirementsEditor
+              requirements={staffingRequirements}
+              onChange={handleStaffingChange}
+            />
+          )}
+        </div>
       </CardContent>
     </Card>
   );
@@ -258,6 +308,13 @@ export function Stores() {
     [refetch]
   );
 
+  const handleStaffingChange = useCallback(
+    async (storeName: string, requirements: StaffingRequirement[]) => {
+      await api.updateStoreStaffing(storeName, requirements);
+    },
+    []
+  );
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -315,6 +372,9 @@ export function Stores() {
               onDelete={() => handleDeleteClick(store.store_name)}
               onHoursChange={(hours) =>
                 handleHoursChange(store.store_name, store.week_no, hours)
+              }
+              onStaffingChange={(requirements) =>
+                handleStaffingChange(store.store_name, requirements)
               }
             />
           ))}

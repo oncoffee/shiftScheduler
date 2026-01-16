@@ -103,10 +103,49 @@ def setup_logging():
     logging.getLogger('').addHandler(console)
 
 
-def get_minimum_workers(day_of_week: str) -> list[int]:
-    if day_of_week in ('Saturday', 'Sunday'):
-        return [2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
-    return [2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+def time_to_minutes(time_str: str) -> int:
+    parts = time_str.split(":")
+    return int(parts[0]) * 60 + int(parts[1])
+
+
+def get_minimum_workers(
+    day_of_week: str,
+    store_start_time,
+    store_end_time,
+    staffing_requirements: list[dict] | None = None,
+    default_min: int = 2
+) -> list[int]:
+    if staffing_requirements is None:
+        if day_of_week in ('Saturday', 'Sunday'):
+            return [2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+        return [2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+
+    day_type = "weekend" if day_of_week in ('Saturday', 'Sunday') else "weekday"
+    relevant_reqs = [r for r in staffing_requirements if r.get("day_type") == day_type]
+
+    store_start_mins = store_start_time.hour * 60 + store_start_time.minute
+    store_end_mins = store_end_time.hour * 60 + store_end_time.minute
+    if store_end_mins <= store_start_mins:
+        store_end_mins = 24 * 60
+
+    num_periods = (store_end_mins - store_start_mins) // 30
+    minimum_workers = []
+
+    for period_idx in range(num_periods):
+        period_start = store_start_mins + (period_idx * 30)
+        period_end = period_start + 30
+
+        min_staff = default_min
+        for req in relevant_reqs:
+            req_start = time_to_minutes(req["start_time"])
+            req_end = time_to_minutes(req["end_time"])
+            if req_start <= period_start < req_end:
+                min_staff = req["min_staff"]
+                break
+
+        minimum_workers.append(min_staff)
+
+    return minimum_workers
 
 
 def extract_schedule_dataframe(model) -> pd.DataFrame:
@@ -123,7 +162,7 @@ def extract_schedule_dataframe(model) -> pd.DataFrame:
     return df_wide[cols]
 
 
-def main(locked_shifts: list[dict] | None = None) -> WeeklyScheduleResult:
+def main(locked_shifts: list[dict] | None = None, staffing_requirements: list[dict] | None = None) -> WeeklyScheduleResult:
     data_import.load_data()
     setup_logging()
 
@@ -144,10 +183,16 @@ def main(locked_shifts: list[dict] | None = None) -> WeeklyScheduleResult:
         week_no = s.week_no
         store_name = s.store_name
         day_of_week = s.day_of_week
-        minimum_workers = get_minimum_workers(day_of_week)
 
         store_start_time = parser.parse(s.start_time).time()
         store_end_time = parser.parse(s.end_time).time()
+
+        minimum_workers = get_minimum_workers(
+            day_of_week,
+            store_start_time,
+            store_end_time,
+            staffing_requirements
+        )
 
         store_df = putting_store_time_in_df(s.day_of_week, store_start_time,
                                             store_end_time)

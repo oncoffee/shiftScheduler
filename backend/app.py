@@ -54,6 +54,21 @@ async def lifespan(app: FastAPI):
     await close_db()
 
 
+async def get_staffing_requirements() -> list[dict] | None:
+    stores = await StoreDoc.find().to_list()
+    if stores and stores[0].staffing_requirements:
+        return [
+            {
+                "day_type": r.day_type,
+                "start_time": normalize_time(r.start_time),
+                "end_time": normalize_time(r.end_time),
+                "min_staff": r.min_staff,
+            }
+            for r in stores[0].staffing_requirements
+        ]
+    return None
+
+
 app = FastAPI(title="shiftScheduler", lifespan=lifespan)
 
 app.add_middleware(
@@ -94,8 +109,13 @@ async def run_ep(pass_key: str) -> WeeklyScheduleResult:
                         "periods": scheduled_periods,
                     })
 
+    staffing_requirements = await get_staffing_requirements()
+
     try:
-        result = main(locked_shifts=locked_shifts if locked_shifts else None)
+        result = main(
+            locked_shifts=locked_shifts if locked_shifts else None,
+            staffing_requirements=staffing_requirements
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -709,8 +729,9 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
         raise HTTPException(status_code=404, detail=f"No schedule found for {request.employee_name} on {request.day_of_week}")
 
     # Recalculate costs
+    staffing_reqs = await get_staffing_requirements()
     updated_summaries, total_cost, total_dummy, total_short_shift = await recalculate_schedule_costs(
-        updated_schedules, current_summaries
+        updated_schedules, current_summaries, staffing_reqs
     )
 
     # Update database
@@ -992,8 +1013,9 @@ async def delete_shift(schedule_id: str, request: DeleteShiftRequest):
             )
         )
 
+    staffing_reqs = await get_staffing_requirements()
     updated_summaries, total_cost, total_dummy, total_short_shift = await recalculate_schedule_costs(
-        current_schedules, current_summaries
+        current_schedules, current_summaries, staffing_reqs
     )
 
     # Update database
@@ -1104,3 +1126,52 @@ async def delete_store(store_name: str):
         raise HTTPException(status_code=404, detail="Store not found")
     await store.delete()
     return {"success": True}
+
+
+class StaffingRequirementUpdate(BaseModel):
+    day_type: str
+    start_time: str
+    end_time: str
+    min_staff: int
+
+
+class StaffingRequirementsUpdate(BaseModel):
+    requirements: list[StaffingRequirementUpdate]
+
+
+@app.get("/stores/{store_name}/staffing")
+async def get_store_staffing(store_name: str):
+    store = await StoreDoc.find_one(StoreDoc.store_name == store_name)
+    if not store:
+        return []
+    return [
+        {
+            "day_type": r.day_type,
+            "start_time": normalize_time(r.start_time),
+            "end_time": normalize_time(r.end_time),
+            "min_staff": r.min_staff,
+        }
+        for r in store.staffing_requirements
+    ]
+
+
+@app.put("/stores/{store_name}/staffing")
+async def update_store_staffing(store_name: str, request: StaffingRequirementsUpdate):
+    from db.models import StaffingRequirement
+
+    store = await StoreDoc.find_one(StoreDoc.store_name == store_name)
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    requirements = [
+        StaffingRequirement(
+            day_type=r.day_type,
+            start_time=r.start_time,
+            end_time=r.end_time,
+            min_staff=r.min_staff,
+        )
+        for r in request.requirements
+    ]
+
+    await store.set({"staffing_requirements": requirements, "updated_at": datetime.utcnow()})
+    return {"success": True, "store_name": store_name}

@@ -32,9 +32,17 @@ class StoreHours(BaseModel):
     end_time: str
 
 
+class StaffingRequirement(BaseModel):
+    day_type: str
+    start_time: str
+    end_time: str
+    min_staff: int
+
+
 class StoreDoc(Document):
     store_name: Indexed(str, unique=True)
     hours: list[StoreHours] = []
+    staffing_requirements: list[StaffingRequirement] = []
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
