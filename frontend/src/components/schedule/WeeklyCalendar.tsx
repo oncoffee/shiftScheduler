@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, AlertTriangle } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
+  useDroppable,
   useSensor,
   useSensors,
   PointerSensor,
@@ -75,6 +76,39 @@ function formatTime(timeStr: string): string {
   return m > 0 ? `${displayH}:${m.toString().padStart(2, "0")} ${ampm}` : `${displayH} ${ampm}`;
 }
 
+interface DroppableColumnProps {
+  employeeName: string;
+  isEditMode: boolean;
+  height: number;
+  isOver: boolean;
+  children: React.ReactNode;
+}
+
+function DroppableColumn({
+  employeeName,
+  isEditMode,
+  height,
+  isOver,
+  children,
+}: DroppableColumnProps) {
+  const { setNodeRef } = useDroppable({
+    id: `column-${employeeName}`,
+    data: { type: "column", employeeName },
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={`relative border-l border-gray-100 transition-colors ${
+        isEditMode ? "bg-blue-50/20" : ""
+      } ${isOver ? "bg-green-100/50 ring-2 ring-green-400 ring-inset" : ""}`}
+      style={{ height }}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function WeeklyCalendar({
   schedules,
   dailySummaries,
@@ -84,6 +118,7 @@ export function WeeklyCalendar({
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const selectedDay = DAYS_ORDER[selectedDayIndex];
   const [activeShift, setActiveShift] = useState<EmployeeDaySchedule | null>(null);
+  const [overColumn, setOverColumn] = useState<string | null>(null);
 
   const { calculateNewTimes, START_HOUR } = useScheduleEdit();
 
@@ -168,22 +203,40 @@ export function WeeklyCalendar({
     }
   }, []);
 
+  const handleDragOver = useCallback((event: { over: { data: { current?: { type?: string; employeeName?: string } } } | null }) => {
+    const overData = event.over?.data.current;
+    if (overData?.type === "column") {
+      setOverColumn(overData.employeeName || null);
+    } else {
+      setOverColumn(null);
+    }
+  }, []);
+
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
-      const { active, delta } = event;
+      const { active, over, delta } = event;
       const shiftData = active.data.current;
 
       if (shiftData?.type === "shift" && activeShift && onShiftUpdate) {
         const { newStart, newEnd } = calculateNewTimes(activeShift, delta.y, "move");
+
+        const overData = over?.data.current as { type?: string; employeeName?: string } | undefined;
+        const targetEmployee = overData?.type === "column" ? overData.employeeName : undefined;
+        const newEmployeeName = targetEmployee && targetEmployee !== activeShift.employee_name
+          ? targetEmployee
+          : undefined;
+
         onShiftUpdate(
           activeShift.employee_name,
           activeShift.day_of_week,
           newStart,
-          newEnd
+          newEnd,
+          newEmployeeName
         );
       }
 
       setActiveShift(null);
+      setOverColumn(null);
     },
     [activeShift, onShiftUpdate, calculateNewTimes]
   );
@@ -266,6 +319,7 @@ export function WeeklyCalendar({
       <DndContext
         sensors={sensors}
         onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
       >
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -320,16 +374,16 @@ export function WeeklyCalendar({
             {employees.map((emp) => {
               const shift = shiftsByEmployee.get(emp);
               const color = employeeColorMap.get(emp)!;
+              const isColumnOver = overColumn === emp && activeShift?.employee_name !== emp;
 
               return (
-                <div
+                <DroppableColumn
                   key={emp}
-                  className={`relative border-l border-gray-100 ${
-                    isEditMode ? "bg-blue-50/20" : ""
-                  }`}
-                  style={{ height: HOUR_SLOTS.length * HOUR_HEIGHT }}
+                  employeeName={emp}
+                  isEditMode={isEditMode}
+                  height={HOUR_SLOTS.length * HOUR_HEIGHT}
+                  isOver={isColumnOver}
                 >
-                  {/* Hour grid lines */}
                   {HOUR_SLOTS.map(({ hour }) => (
                     <div
                       key={hour}
@@ -338,7 +392,6 @@ export function WeeklyCalendar({
                     />
                   ))}
 
-                  {/* Shift block */}
                   {shift && (
                     <DraggableShift
                       shift={shift}
@@ -354,7 +407,7 @@ export function WeeklyCalendar({
                       formatTime={formatTime}
                     />
                   )}
-                </div>
+                </DroppableColumn>
               );
             })}
 

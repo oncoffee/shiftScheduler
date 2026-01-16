@@ -218,7 +218,7 @@ function ScheduleContent() {
 
               {isEditMode && (
                 <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
-                  <strong>Edit Mode:</strong> Drag shifts up/down to change times, or resize by dragging the top/bottom edges.
+                  <strong>Edit Mode:</strong> Drag shifts up/down to change times, drag to another column to reassign, or resize by dragging the edges.
                   Press <kbd className="px-1.5 py-0.5 bg-blue-100 rounded text-xs">Ctrl+Z</kbd> to undo.
                 </div>
               )}
