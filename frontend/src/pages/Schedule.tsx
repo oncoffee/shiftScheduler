@@ -195,11 +195,11 @@ function ScheduleContent() {
   }, [selectedShift, deleteShift]);
 
   const handleModalToggleLock = useCallback(() => {
-    if (selectedShift) {
-      toggleShiftLock(selectedShift.employee_name, selectedShift.day_of_week);
+    if (selectedShift && selectedShift.date) {
+      toggleShiftLock(selectedShift.employee_name, selectedShift.date);
       // Update the selected shift with new lock state
       const updatedShift = localSchedules.find(
-        (s) => s.employee_name === selectedShift.employee_name && s.day_of_week === selectedShift.day_of_week
+        (s) => s.employee_name === selectedShift.employee_name && s.date === selectedShift.date
       );
       if (updatedShift) {
         setSelectedShift({ ...updatedShift, is_locked: !selectedShift.is_locked });

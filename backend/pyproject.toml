@@ -16,6 +16,8 @@ dependencies = [
     "uvicorn>=0.40.0",
     "motor>=3.3.0",
     "beanie>=1.25.0",
+    "pulp>=2.8.0",
+    "ortools>=9.8.3296",
 ]
 
 [dependency-groups]

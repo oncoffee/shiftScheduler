@@ -59,7 +59,7 @@ interface WeeklyCalendarProps {
     originalEnd: string,
     newEmployeeName?: string
   ) => void;
-  onToggleLock?: (employeeName: string, dayOfWeek: string) => void;
+  onToggleLock?: (employeeName: string, date: string) => void;
   onShiftClick?: (shift: EmployeeDaySchedule) => void;
   onEmptyClick?: (employeeName: string, dayOfWeek: string, startTime?: string, endTime?: string) => void;
   employeeAvailability?: Employee[];
@@ -888,7 +888,7 @@ export function WeeklyCalendar({
                         onResizeStart={handleResizeStart}
                         onToggleLock={
                           onToggleLock
-                            ? (shift) => onToggleLock(shift.employee_name, shift.day_of_week)
+                            ? (shift) => shift.date && onToggleLock(shift.employee_name, shift.date)
                             : undefined
                         }
                         onClick={onShiftClick}

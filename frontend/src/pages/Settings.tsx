@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { api, type Config, type SyncResult } from "@/api/client";
+import { api, type Config, type SyncResult, type SolverType } from "@/api/client";
 import { Loader2, Save, RefreshCw, AlertCircle, CheckCircle2, Database } from "lucide-react";
 
 export function Settings() {
@@ -16,6 +16,7 @@ export function Settings() {
     short_shift_penalty: 50,
     min_shift_hours: 3,
     max_daily_hours: 11,
+    solver_type: "gurobi",
   });
 
   // Sync state
@@ -84,7 +85,8 @@ export function Settings() {
     (formValues.dummy_worker_cost !== config.dummy_worker_cost ||
       formValues.short_shift_penalty !== config.short_shift_penalty ||
       formValues.min_shift_hours !== config.min_shift_hours ||
-      formValues.max_daily_hours !== config.max_daily_hours);
+      formValues.max_daily_hours !== config.max_daily_hours ||
+      formValues.solver_type !== config.solver_type);
 
   return (
     <div className="space-y-8">
@@ -220,6 +222,29 @@ export function Settings() {
 
               <Separator />
 
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Optimization Solver</label>
+                <p className="text-xs text-muted-foreground">
+                  Select which optimization solver to use for generating schedules
+                </p>
+                <select
+                  value={formValues.solver_type}
+                  onChange={(e) =>
+                    setFormValues((prev) => ({
+                      ...prev,
+                      solver_type: e.target.value as SolverType,
+                    }))
+                  }
+                  className="flex h-9 w-full max-w-xs rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="gurobi">Gurobi (Commercial)</option>
+                  <option value="pulp">PuLP/CBC (Open Source)</option>
+                  <option value="ortools">Google OR-Tools (Open Source)</option>
+                </select>
+              </div>
+
+              <Separator />
+
               <div className="flex items-center justify-between">
                 <p className="text-xs text-muted-foreground">
                   Changes are saved to Google Sheets and apply to the next solver run
@@ -319,9 +344,14 @@ export function Settings() {
             <strong>Shift Scheduler</strong> - An optimization-based employee scheduling system.
           </p>
           <p>
-            Uses Gurobi optimization solver to generate cost-effective schedules
-            while respecting employee availability and store requirements.
+            Supports multiple optimization solvers to generate cost-effective schedules
+            while respecting employee availability and store requirements:
           </p>
+          <ul className="list-disc list-inside space-y-1 ml-2">
+            <li><strong>Gurobi</strong> - Commercial solver with excellent performance</li>
+            <li><strong>PuLP/CBC</strong> - Open source linear programming solver</li>
+            <li><strong>Google OR-Tools</strong> - Open source constraint programming solver</li>
+          </ul>
         </CardContent>
       </Card>
     </div>

@@ -44,7 +44,7 @@ interface ScheduleEditContextValue {
   undo: () => void;
   canUndo: boolean;
   setScheduleData: (schedule: WeeklyScheduleResult, id: string) => void;
-  toggleShiftLock: (employeeName: string, dayOfWeek: string) => Promise<void>;
+  toggleShiftLock: (employeeName: string, date: string) => Promise<void>;
   deleteShift: (employeeName: string, dayOfWeek: string) => Promise<void>;
   selectedShift: EmployeeDaySchedule | null;
   setSelectedShift: (shift: EmployeeDaySchedule | null) => void;
@@ -331,11 +331,11 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
   }, [undoStack]);
 
   const toggleShiftLock = useCallback(
-    async (employeeName: string, dayOfWeek: string) => {
+    async (employeeName: string, date: string) => {
       if (!scheduleId) return;
 
       const schedule = localSchedules.find(
-        (s) => s.employee_name === employeeName && s.day_of_week === dayOfWeek
+        (s) => s.employee_name === employeeName && s.date === date
       );
       if (!schedule) return;
 
@@ -346,7 +346,7 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
 
       setLocalSchedules((prev) =>
         prev.map((s) =>
-          s.employee_name === employeeName && s.day_of_week === dayOfWeek
+          s.employee_name === employeeName && s.date === date
             ? { ...s, is_locked: newLockState }
             : s
         )
@@ -360,7 +360,7 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
         const result = await api.toggleShiftLock(
           scheduleId,
           employeeName,
-          dayOfWeek,
+          date,
           newLockState
         );
 
@@ -369,9 +369,9 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
 
           setLocalSchedules((prev) =>
             prev.map((s) => {
-              if (s.employee_name === employeeName && s.day_of_week === dayOfWeek) {
+              if (s.employee_name === employeeName && s.date === date) {
                 const serverSchedule = result.updated_schedule.schedules.find(
-                  (ss) => ss.employee_name === employeeName && ss.day_of_week === dayOfWeek
+                  (ss) => ss.employee_name === employeeName && ss.date === date
                 );
                 return { ...s, is_locked: serverSchedule?.is_locked ?? newLockState };
               }
@@ -383,7 +383,7 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
         console.error("Failed to toggle lock:", error);
         setLocalSchedules((prev) =>
           prev.map((s) =>
-            s.employee_name === employeeName && s.day_of_week === dayOfWeek
+            s.employee_name === employeeName && s.date === date
               ? { ...s, is_locked: currentlyLocked }
               : s
           )

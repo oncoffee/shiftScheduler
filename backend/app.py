@@ -108,25 +108,29 @@ async def run_ep(pass_key: str, start_date: str, end_date: str) -> WeeklySchedul
     current_schedule = await ScheduleRunDoc.find_one(ScheduleRunDoc.is_current == True)
     if current_schedule:
         for assignment in current_schedule.assignments:
-            if assignment.is_locked and assignment.total_hours > 0:
+            if assignment.is_locked and assignment.total_hours > 0 and assignment.date:
                 scheduled_periods = [
                     p.period_index for p in assignment.periods if p.scheduled
                 ]
                 if scheduled_periods:
                     locked_shifts.append({
                         "employee_name": assignment.employee_name,
-                        "day_of_week": assignment.day_of_week,
+                        "date": assignment.date,
                         "periods": scheduled_periods,
                     })
 
     staffing_requirements = await get_staffing_requirements()
+
+    config = await ConfigDoc.find_one()
+    solver_type = getattr(config, "solver_type", "gurobi") if config else "gurobi"
 
     try:
         result = main(
             start_date=parsed_start,
             end_date=parsed_end,
             locked_shifts=locked_shifts if locked_shifts else None,
-            staffing_requirements=staffing_requirements
+            staffing_requirements=staffing_requirements,
+            solver_type=solver_type,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -583,6 +587,9 @@ async def get_schedules():
     return result
 
 
+VALID_SOLVER_TYPES = ["gurobi", "pulp", "ortools"]
+
+
 @app.get("/config")
 async def get_config():
     config = await ConfigDoc.find_one()
@@ -596,6 +603,7 @@ async def get_config():
         "short_shift_penalty": config.short_shift_penalty,
         "min_shift_hours": config.min_shift_hours,
         "max_daily_hours": config.max_daily_hours,
+        "solver_type": getattr(config, "solver_type", "gurobi"),
     }
 
 
@@ -605,6 +613,7 @@ async def update_config(
     short_shift_penalty: float | None = None,
     min_shift_hours: float | None = None,
     max_daily_hours: float | None = None,
+    solver_type: str | None = None,
 ):
     config = await ConfigDoc.find_one()
 
@@ -620,6 +629,13 @@ async def update_config(
         updates["min_shift_hours"] = min_shift_hours
     if max_daily_hours is not None:
         updates["max_daily_hours"] = max_daily_hours
+    if solver_type is not None:
+        if solver_type not in VALID_SOLVER_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid solver_type. Must be one of: {VALID_SOLVER_TYPES}"
+            )
+        updates["solver_type"] = solver_type
 
     if updates:
         updates["updated_at"] = datetime.utcnow()
@@ -636,6 +652,7 @@ async def update_config(
         "short_shift_penalty": config.short_shift_penalty,
         "min_shift_hours": config.min_shift_hours,
         "max_daily_hours": config.max_daily_hours,
+        "solver_type": getattr(config, "solver_type", "gurobi"),
     }
 
 
@@ -959,10 +976,9 @@ async def toggle_shift_lock(schedule_id: str, request: ToggleLockRequest):
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    # Find and update the assignment
     assignment_found = False
     for assignment in schedule_run.assignments:
-        if assignment.employee_name == request.employee_name and assignment.day_of_week == request.day_of_week:
+        if assignment.employee_name == request.employee_name and assignment.date == request.date:
             assignment.is_locked = request.is_locked
             # Also update periods' is_locked status for scheduled periods
             for period in assignment.periods:
@@ -974,7 +990,7 @@ async def toggle_shift_lock(schedule_id: str, request: ToggleLockRequest):
     if not assignment_found:
         raise HTTPException(
             status_code=404,
-            detail=f"No assignment found for {request.employee_name} on {request.day_of_week}"
+            detail=f"No assignment found for {request.employee_name} on {request.date}"
         )
 
     # Save to database

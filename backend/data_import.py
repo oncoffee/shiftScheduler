@@ -57,6 +57,7 @@ class Config(BaseModel):
     short_shift_penalty: float = 50.0  # Penalty per hour below minimum
     min_shift_hours: float = 3.0  # Minimum shift length in hours
     max_daily_hours: float = 11.0  # Maximum hours per employee per day
+    solver_type: str = "gurobi"
 
 
 def load_data():

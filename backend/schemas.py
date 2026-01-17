@@ -105,7 +105,7 @@ class BatchUpdateResponse(BaseModel):
 
 class ToggleLockRequest(BaseModel):
     employee_name: str
-    day_of_week: str
+    date: str
     is_locked: bool
 
 

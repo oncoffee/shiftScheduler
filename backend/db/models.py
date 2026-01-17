@@ -54,6 +54,7 @@ class ConfigDoc(Document):
     short_shift_penalty: float = 50.0
     min_shift_hours: float = 3.0
     max_daily_hours: float = 11.0
+    solver_type: str = "gurobi"
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Settings:

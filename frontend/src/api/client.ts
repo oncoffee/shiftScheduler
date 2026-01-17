@@ -69,7 +69,7 @@ export const api = {
       body: JSON.stringify({ updates }),
     }),
 
-  toggleShiftLock: (scheduleId: string, employeeName: string, dayOfWeek: string, isLocked: boolean) =>
+  toggleShiftLock: (scheduleId: string, employeeName: string, date: string, isLocked: boolean) =>
     fetchApi<{
       success: boolean;
       updated_schedule: WeeklyScheduleResult;
@@ -77,7 +77,7 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({
         employee_name: employeeName,
-        day_of_week: dayOfWeek,
+        date: date,
         is_locked: isLocked,
       }),
     }),
@@ -146,6 +146,8 @@ export const api = {
       params.set("min_shift_hours", config.min_shift_hours.toString());
     if (config.max_daily_hours !== undefined)
       params.set("max_daily_hours", config.max_daily_hours.toString());
+    if (config.solver_type !== undefined)
+      params.set("solver_type", config.solver_type);
     return fetchApi<Config>(`/config?${params.toString()}`, { method: "POST" });
   },
 };
@@ -197,11 +199,14 @@ export interface Schedule {
   periods: string[];
 }
 
+export type SolverType = "gurobi" | "pulp" | "ortools";
+
 export interface Config {
   dummy_worker_cost: number;
   short_shift_penalty: number;
   min_shift_hours: number;
   max_daily_hours: number;
+  solver_type: SolverType;
 }
 
 export interface SyncResult {
