@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
 import { Play, Loader2, CheckCircle, XCircle, RefreshCw, Edit3, Plus, Calendar } from "lucide-react";
 import { api } from "@/api/client";
+import type { Employee } from "@/api/client";
 import { WeeklyCalendar, EditModeToolbar, ShiftDetailModal, AddShiftModal } from "@/components/schedule";
 import {
   ScheduleEditProvider,
@@ -68,6 +69,7 @@ function ScheduleContent() {
   const minDate = formatDateISO(tomorrow);
   const [selectedStartDate, setSelectedStartDate] = useState(() => formatDateISO(tomorrow));
   const [selectedEndDate, setSelectedEndDate] = useState(() => formatDateISO(addDays(tomorrow, 6)));
+  const [employees, setEmployees] = useState<Employee[]>([]);
 
   const {
     localSchedules,
@@ -85,13 +87,17 @@ function ScheduleContent() {
 
   const loadCachedSchedule = useCallback(async () => {
     try {
-      // Get the current schedule
-      const result = await api.getScheduleResults();
+      const [result, employeeList] = await Promise.all([
+        api.getScheduleResults(),
+        api.getEmployees(),
+      ]);
+
+      setEmployees(employeeList);
+
       if (result) {
         setScheduleResult(result);
         setStatus("success");
 
-        // Get the schedule ID from history
         const history = await api.getScheduleHistory(1, 0);
         if (history.length > 0 && history[0].is_current) {
           setScheduleId(history[0].id);
@@ -367,6 +373,7 @@ function ScheduleContent() {
                 onToggleLock={toggleShiftLock}
                 onShiftClick={handleShiftClick}
                 onEmptyClick={handleEmptyClick}
+                employeeAvailability={employees}
               />
 
               <ShiftDetailModal

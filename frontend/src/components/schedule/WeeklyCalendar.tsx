@@ -11,6 +11,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import type { EmployeeDaySchedule, DayScheduleSummary } from "@/types/schedule";
+import type { Employee } from "@/api/client";
 import { DraggableShift, ShiftPreview } from "./DraggableShift";
 import { useScheduleEdit } from "@/hooks/useScheduleEdit";
 
@@ -61,6 +62,7 @@ interface WeeklyCalendarProps {
   onToggleLock?: (employeeName: string, dayOfWeek: string) => void;
   onShiftClick?: (shift: EmployeeDaySchedule) => void;
   onEmptyClick?: (employeeName: string, dayOfWeek: string, startTime?: string, endTime?: string) => void;
+  employeeAvailability?: Employee[];
 }
 
 // Helper to get the Monday of the week containing a given date
@@ -244,6 +246,11 @@ function SelectionPreview({ startY, endY }: SelectionPreviewProps) {
   );
 }
 
+interface UnavailableRange {
+  startHour: number;
+  endHour: number;
+}
+
 interface DroppableColumnProps {
   employeeName: string;
   isEditMode: boolean;
@@ -258,6 +265,7 @@ interface DroppableColumnProps {
   onSelectionStart: (y: number, employee: string) => void;
   onSelectionMove: (y: number, maxHeight: number) => void;
   onSelectionEnd: () => void;
+  unavailableRanges?: UnavailableRange[];
 }
 
 function DroppableColumn({
@@ -274,6 +282,7 @@ function DroppableColumn({
   onSelectionStart,
   onSelectionMove,
   onSelectionEnd,
+  unavailableRanges = [],
 }: DroppableColumnProps) {
   const { setNodeRef } = useDroppable({
     id: `column-${employeeName}`,
@@ -319,6 +328,17 @@ function DroppableColumn({
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseLeave}
     >
+      {unavailableRanges.map((range, idx) => {
+        const top = (range.startHour - START_HOUR) * HOUR_HEIGHT;
+        const rangeHeight = (range.endHour - range.startHour) * HOUR_HEIGHT;
+        return (
+          <div
+            key={`unavail-${idx}`}
+            className="absolute left-0 right-0 bg-red-100/60 pointer-events-none"
+            style={{ top, height: rangeHeight }}
+          />
+        );
+      })}
       {children}
       {isThisColumnSelecting && selectionStartY !== null && selectionEndY !== null && (
         <SelectionPreview
@@ -349,6 +369,60 @@ function getWeekOffsetToToday(startDateStr: string | undefined): number {
   return diffWeeks;
 }
 
+function getUnavailableRanges(
+  employeeName: string,
+  dayOfWeek: string,
+  employeeAvailability: Employee[] | undefined
+): UnavailableRange[] {
+  if (!employeeAvailability) return [];
+
+  const employee = employeeAvailability.find(e => e.employee_name === employeeName);
+  if (!employee || !employee.availability || employee.availability.length === 0) {
+    return [];
+  }
+
+  const daySlots = employee.availability.filter(slot => slot.day_of_week === dayOfWeek);
+
+  if (daySlots.length === 0) {
+    return [{ startHour: START_HOUR, endHour: START_HOUR + HOUR_SLOTS.length }];
+  }
+
+  const unavailable: UnavailableRange[] = [];
+  const visibleStart = START_HOUR;
+  const visibleEnd = START_HOUR + HOUR_SLOTS.length;
+
+  const sortedSlots = [...daySlots].sort((a, b) => {
+    const aStart = parseTimeToHour(a.start_time);
+    const bStart = parseTimeToHour(b.start_time);
+    return aStart - bStart;
+  });
+
+  let currentHour = visibleStart;
+
+  for (const slot of sortedSlots) {
+    const slotStart = parseTimeToHour(slot.start_time);
+    const slotEnd = parseTimeToHour(slot.end_time);
+
+    if (slotStart > currentHour) {
+      unavailable.push({
+        startHour: Math.max(currentHour, visibleStart),
+        endHour: Math.min(slotStart, visibleEnd),
+      });
+    }
+
+    currentHour = Math.max(currentHour, slotEnd);
+  }
+
+  if (currentHour < visibleEnd) {
+    unavailable.push({
+      startHour: Math.max(currentHour, visibleStart),
+      endHour: visibleEnd,
+    });
+  }
+
+  return unavailable.filter(r => r.endHour > r.startHour && r.startHour < visibleEnd && r.endHour > visibleStart);
+}
+
 export function WeeklyCalendar({
   schedules,
   dailySummaries,
@@ -358,6 +432,7 @@ export function WeeklyCalendar({
   onToggleLock,
   onShiftClick,
   onEmptyClick,
+  employeeAvailability,
 }: WeeklyCalendarProps) {
   const [selectedDayIndex, setSelectedDayIndex] = useState(getTodayDayIndex);
   const [weekOffset, setWeekOffset] = useState(0);
@@ -763,6 +838,7 @@ export function WeeklyCalendar({
               const color = employeeColorMap.get(emp)!;
               const isColumnOver = overColumn === emp && activeShift?.employee_name !== emp;
               const blocks = schedule ? getContiguousShiftBlocks(schedule) : [];
+              const unavailableRanges = getUnavailableRanges(emp, selectedDay, employeeAvailability);
 
               return (
                 <DroppableColumn
@@ -779,6 +855,7 @@ export function WeeklyCalendar({
                   onSelectionStart={handleSelectionStart}
                   onSelectionMove={handleSelectionMove}
                   onSelectionEnd={handleSelectionEnd}
+                  unavailableRanges={unavailableRanges}
                 >
                   {HOUR_SLOTS.map(({ hour }) => (
                     <div
