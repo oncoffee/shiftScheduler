@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight, AlertTriangle } from "lucide-react";
 import {
   DndContext,
@@ -327,6 +327,25 @@ function DroppableColumn({
   );
 }
 
+function getTodayDayIndex(): number {
+  const today = new Date();
+  const jsDay = today.getDay();
+  return jsDay === 0 ? 6 : jsDay - 1;
+}
+
+function getWeekOffsetToToday(startDateStr: string | undefined): number {
+  if (!startDateStr) return 0;
+
+  const scheduleStart = new Date(startDateStr + "T00:00:00");
+  const scheduleMonday = getMondayOfWeek(scheduleStart);
+  const todayMonday = getMondayOfWeek(new Date());
+
+  const diffTime = todayMonday.getTime() - scheduleMonday.getTime();
+  const diffWeeks = Math.round(diffTime / (7 * 24 * 60 * 60 * 1000));
+
+  return diffWeeks;
+}
+
 export function WeeklyCalendar({
   schedules,
   dailySummaries,
@@ -337,9 +356,17 @@ export function WeeklyCalendar({
   onShiftClick,
   onEmptyClick,
 }: WeeklyCalendarProps) {
-  const [selectedDayIndex, setSelectedDayIndex] = useState(0);
+  const [selectedDayIndex, setSelectedDayIndex] = useState(getTodayDayIndex);
   const [weekOffset, setWeekOffset] = useState(0);
+  const hasInitializedWeek = useRef(false);
   const selectedDay = DAYS_ORDER[selectedDayIndex];
+
+  useEffect(() => {
+    if (startDate && !hasInitializedWeek.current) {
+      hasInitializedWeek.current = true;
+      setWeekOffset(getWeekOffsetToToday(startDate));
+    }
+  }, [startDate]);
 
   // Get dates for each day based on start date and week offset
   const dayDates = useMemo(() => getDayDates(startDate, weekOffset), [startDate, weekOffset]);
@@ -443,7 +470,12 @@ export function WeeklyCalendar({
 
   const prevWeek = () => setWeekOffset((w) => w - 1);
   const nextWeek = () => setWeekOffset((w) => w + 1);
-  const goToCurrentWeek = () => setWeekOffset(0);
+  const todayWeekOffset = getWeekOffsetToToday(startDate);
+  const goToToday = () => {
+    setWeekOffset(todayWeekOffset);
+    setSelectedDayIndex(getTodayDayIndex());
+  };
+  const isAtTodayWeek = weekOffset === todayWeekOffset;
 
   const handleSelectionStart = useCallback((y: number, employee: string) => {
     setIsSelecting(true);
@@ -585,12 +617,12 @@ export function WeeklyCalendar({
             <div className="text-sm font-semibold text-gray-900">
               {weekRange ? formatWeekRange(weekRange.monday, weekRange.sunday) : "Select dates"}
             </div>
-            {weekOffset !== 0 && (
+            {!isAtTodayWeek && (
               <button
-                onClick={goToCurrentWeek}
+                onClick={goToToday}
                 className="text-xs text-blue-600 hover:text-blue-800"
               >
-                Back to schedule start
+                Go to today
               </button>
             )}
           </div>
@@ -615,17 +647,23 @@ export function WeeklyCalendar({
         {DAYS_ORDER.map((day, idx) => {
           const dayDate = dayDates.get(day);
           const dateNum = dayDate?.getDate();
+          const isToday = dayDate ? formatDateToISO(dayDate) === formatDateToISO(new Date()) : false;
           return (
             <button
               key={day}
               onClick={() => setSelectedDayIndex(idx)}
-              className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+              className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors relative ${
                 idx === selectedDayIndex
                   ? "bg-blue-500 text-white"
-                  : "text-gray-600 hover:bg-gray-100"
+                  : isToday
+                    ? "text-blue-600 bg-blue-50 ring-1 ring-blue-300"
+                    : "text-gray-600 hover:bg-gray-100"
               }`}
             >
               {day.slice(0, 3)}{dateNum !== undefined ? ` ${dateNum}` : ""}
+              {isToday && idx !== selectedDayIndex && (
+                <span className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full" />
+              )}
             </button>
           );
         })}

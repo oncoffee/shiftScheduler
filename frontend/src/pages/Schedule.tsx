@@ -13,20 +13,23 @@ import {
 import type { WeeklyScheduleResult, EmployeeDaySchedule } from "@/types/schedule";
 
 // Helper functions for date handling
-function getMonday(d: Date): Date {
-  const date = new Date(d);
-  const day = date.getDay();
-  const diff = date.getDate() - day + (day === 0 ? -6 : 1); // Adjust for Sunday
-  return new Date(date.setDate(diff));
+function getTomorrow(): Date {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return tomorrow;
 }
 
-function getSunday(d: Date): Date {
-  const monday = getMonday(d);
-  return new Date(monday.getTime() + 6 * 24 * 60 * 60 * 1000);
+function addDays(d: Date, days: number): Date {
+  const result = new Date(d);
+  result.setDate(result.getDate() + days);
+  return result;
 }
 
 function formatDateISO(d: Date): string {
-  return d.toISOString().split("T")[0];
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function formatDateRange(startDate: string, endDate: string): string {
@@ -60,10 +63,11 @@ function ScheduleContent() {
     endTime?: string;
   }>({});
 
-  // Date picker state
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [selectedStartDate, setSelectedStartDate] = useState(() => formatDateISO(getMonday(new Date())));
-  const [selectedEndDate, setSelectedEndDate] = useState(() => formatDateISO(getSunday(new Date())));
+  const tomorrow = getTomorrow();
+  const minDate = formatDateISO(tomorrow);
+  const [selectedStartDate, setSelectedStartDate] = useState(() => formatDateISO(tomorrow));
+  const [selectedEndDate, setSelectedEndDate] = useState(() => formatDateISO(addDays(tomorrow, 6)));
 
   const {
     localSchedules,
@@ -408,7 +412,13 @@ function ScheduleContent() {
                 id="start-date"
                 type="date"
                 value={selectedStartDate}
-                onChange={(e) => setSelectedStartDate(e.target.value)}
+                min={minDate}
+                onChange={(e) => {
+                  setSelectedStartDate(e.target.value);
+                  if (e.target.value > selectedEndDate) {
+                    setSelectedEndDate(e.target.value);
+                  }
+                }}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
@@ -420,6 +430,7 @@ function ScheduleContent() {
                 id="end-date"
                 type="date"
                 value={selectedEndDate}
+                min={selectedStartDate}
                 onChange={(e) => setSelectedEndDate(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
