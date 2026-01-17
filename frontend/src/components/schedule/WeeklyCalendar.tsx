@@ -464,7 +464,7 @@ export function WeeklyCalendar({
   const daySummary = selectedDate
     ? summaryByDate.get(selectedDate) || summaryByDay.get(selectedDay)
     : summaryByDay.get(selectedDay);
-  const totalCost = dailySummaries.reduce((sum, s) => sum + s.total_cost, 0);
+  const totalCost = dailySummaries.reduce((sum, s) => sum + s.total_cost - (s.dummy_worker_cost || 0), 0);
   const hasUnfilled = daySummary && daySummary.unfilled_periods.length > 0;
 
   const mergedUnfilledPeriods = useMemo(() => {
@@ -665,7 +665,7 @@ export function WeeklyCalendar({
         </div>
         {daySummary && (
           <div className="text-sm text-gray-500">
-            <span className="font-semibold text-gray-900">${daySummary.total_cost.toFixed(0)}</span>
+            <span className="font-semibold text-gray-900">${(daySummary.total_cost - (daySummary.dummy_worker_cost || 0)).toFixed(0)}</span>
             {" "}· {daySummary.employees_scheduled} employees
           </div>
         )}

@@ -339,9 +339,9 @@ function ScheduleContent() {
             <div className="space-y-4">
               <div className="flex gap-4 text-sm">
                 <div className="px-3 py-2 bg-muted rounded-md">
-                  <span className="text-muted-foreground">Total Cost: </span>
+                  <span className="text-muted-foreground">Labor Cost: </span>
                   <span className="font-bold">
-                    ${scheduleResult.total_weekly_cost.toFixed(2)}
+                    ${(scheduleResult.total_weekly_cost - (scheduleResult.total_dummy_worker_cost || 0) - (scheduleResult.total_short_shift_penalty || 0)).toFixed(2)}
                   </span>
                 </div>
                 <div className="px-3 py-2 bg-muted rounded-md">
