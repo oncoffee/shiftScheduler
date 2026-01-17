@@ -60,12 +60,9 @@ function StaffingBlock({
   onDelete,
   disabled,
 }: StaffingBlockProps) {
-  const [dragging, setDragging] = useState<"start" | "end" | "move" | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(requirement.min_staff.toString());
+  const [dragging, setDragging] = useState<"start" | "end" | null>(null);
   const dragStartX = useRef(0);
   const dragStartValues = useRef({ start: 0, end: 0 });
-  const inputRef = useRef<HTMLInputElement>(null);
 
   const startMinutes = timeToMinutes(requirement.start_time);
   const endMinutes = timeToMinutes(requirement.end_time);
@@ -74,15 +71,8 @@ function StaffingBlock({
   const width = ((endMinutes - startMinutes) / TOTAL_MINUTES) * containerWidth;
   const color = COLORS[index % COLORS.length];
 
-  useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [editing]);
-
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent, type: "start" | "end" | "move") => {
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent, type: "start" | "end") => {
       if (disabled) return;
       e.preventDefault();
       e.stopPropagation();
@@ -108,25 +98,6 @@ function StaffingBlock({
         const newEnd = snapToHalfHour(dragStartValues.current.end + deltaMinutes);
         const clampedEnd = Math.min(MAX_HOUR * 60, Math.max(startMinutes + 30, newEnd));
         onUpdate(index, { ...requirement, end_time: minutesToTime(clampedEnd) });
-      } else if (dragging === "move") {
-        const duration = dragStartValues.current.end - dragStartValues.current.start;
-        let newStart = snapToHalfHour(dragStartValues.current.start + deltaMinutes);
-        let newEnd = newStart + duration;
-
-        if (newStart < MIN_HOUR * 60) {
-          newStart = MIN_HOUR * 60;
-          newEnd = newStart + duration;
-        }
-        if (newEnd > MAX_HOUR * 60) {
-          newEnd = MAX_HOUR * 60;
-          newStart = newEnd - duration;
-        }
-
-        onUpdate(index, {
-          ...requirement,
-          start_time: minutesToTime(newStart),
-          end_time: minutesToTime(newEnd),
-        });
       }
     };
 
@@ -139,33 +110,6 @@ function StaffingBlock({
       document.removeEventListener("mouseup", handleMouseUp);
     };
   }, [dragging, containerWidth, index, requirement, startMinutes, endMinutes, onUpdate]);
-
-  const handleNumberClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (disabled) return;
-    setEditValue(requirement.min_staff.toString());
-    setEditing(true);
-  };
-
-  const handleNumberChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setEditValue(e.target.value);
-  };
-
-  const handleNumberBlur = () => {
-    setEditing(false);
-    const num = parseInt(editValue);
-    if (!isNaN(num) && num >= 1 && num <= 20) {
-      onUpdate(index, { ...requirement, min_staff: num });
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      handleNumberBlur();
-    } else if (e.key === "Escape") {
-      setEditing(false);
-    }
-  };
 
   const handleIncrement = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -181,59 +125,40 @@ function StaffingBlock({
 
   return (
     <div
-      className={`absolute top-0 bottom-0 ${color.bg} ${color.border} border-2 rounded-md flex items-center justify-center cursor-grab active:cursor-grabbing transition-colors ${
-        dragging ? "opacity-80" : "hover:opacity-90"
-      }`}
+      className={`absolute top-0 bottom-0 ${color.bg} ${color.border} border-2 rounded-lg flex items-center justify-center transition-colors group`}
       style={{ left, width: Math.max(width, 20) }}
-      onMouseDown={(e) => handleMouseDown(e, "move")}
     >
-      <div
-        className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30"
-        onMouseDown={(e) => handleMouseDown(e, "start")}
-      />
+      {!disabled && (
+        <div
+          className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 rounded-l"
+          onMouseDown={(e) => handleResizeStart(e, "start")}
+        />
+      )}
 
-      <div className="flex flex-col items-center select-none pointer-events-none">
-        {editing ? (
-          <input
-            ref={inputRef}
-            type="number"
-            min="1"
-            max="20"
-            value={editValue}
-            onChange={handleNumberChange}
-            onBlur={handleNumberBlur}
-            onKeyDown={handleKeyDown}
-            className="w-8 h-6 text-center text-sm font-bold bg-white rounded pointer-events-auto"
-            onClick={(e) => e.stopPropagation()}
-          />
-        ) : (
-          <div className="flex items-center gap-1 pointer-events-auto">
-            {!disabled && (
-              <button
-                onClick={handleDecrement}
-                className="w-5 h-5 rounded-full bg-white/30 hover:bg-white/50 flex items-center justify-center transition-colors"
-                disabled={requirement.min_staff <= 1}
-              >
-                <Minus className="w-3 h-3 text-white" />
-              </button>
-            )}
-            <span
-              className="text-lg font-bold text-white drop-shadow cursor-text min-w-[1.5rem] text-center"
-              onClick={handleNumberClick}
+      <div className="flex flex-col items-center select-none">
+        <div className="flex items-center gap-1">
+          {!disabled && (
+            <button
+              onClick={handleDecrement}
+              className="w-6 h-6 rounded-full bg-white/40 hover:bg-white/60 flex items-center justify-center transition-colors"
+              disabled={requirement.min_staff <= 1}
             >
-              {requirement.min_staff}
-            </span>
-            {!disabled && (
-              <button
-                onClick={handleIncrement}
-                className="w-5 h-5 rounded-full bg-white/30 hover:bg-white/50 flex items-center justify-center transition-colors"
-                disabled={requirement.min_staff >= 20}
-              >
-                <Plus className="w-3 h-3 text-white" />
-              </button>
-            )}
-          </div>
-        )}
+              <Minus className="w-3 h-3 text-white" />
+            </button>
+          )}
+          <span className="text-xl font-bold text-white drop-shadow min-w-[1.5rem] text-center">
+            {requirement.min_staff}
+          </span>
+          {!disabled && (
+            <button
+              onClick={handleIncrement}
+              className="w-6 h-6 rounded-full bg-white/40 hover:bg-white/60 flex items-center justify-center transition-colors"
+              disabled={requirement.min_staff >= 20}
+            >
+              <Plus className="w-3 h-3 text-white" />
+            </button>
+          )}
+        </div>
         {width > 50 && (
           <span className="text-[10px] text-white/80">
             {formatTime(requirement.start_time)}-{formatTime(requirement.end_time)}
@@ -243,7 +168,7 @@ function StaffingBlock({
 
       {!disabled && (
         <button
-          className="absolute -top-2 -right-2 w-4 h-4 bg-red-500 rounded-full flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity pointer-events-auto"
+          className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center transition-opacity shadow-sm opacity-0 group-hover:opacity-100"
           onClick={(e) => {
             e.stopPropagation();
             onDelete(index);
@@ -253,10 +178,12 @@ function StaffingBlock({
         </button>
       )}
 
-      <div
-        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30"
-        onMouseDown={(e) => handleMouseDown(e, "end")}
-      />
+      {!disabled && (
+        <div
+          className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 rounded-r"
+          onMouseDown={(e) => handleResizeStart(e, "end")}
+        />
+      )}
     </div>
   );
 }
