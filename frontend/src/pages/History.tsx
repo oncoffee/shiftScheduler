@@ -22,6 +22,20 @@ import { api, type ScheduleHistoryItem } from "@/api/client";
 import { WeeklyCalendar } from "@/components/schedule";
 import type { WeeklyScheduleResult } from "@/types/schedule";
 
+function formatDateRange(startDate: string, endDate: string): string {
+  const start = new Date(startDate + "T00:00:00");
+  const end = new Date(endDate + "T00:00:00");
+  const startMonth = start.toLocaleString("en-US", { month: "short" });
+  const endMonth = end.toLocaleString("en-US", { month: "short" });
+  const startDay = start.getDate();
+  const endDay = end.getDate();
+
+  if (startMonth === endMonth) {
+    return `${startMonth} ${startDay} - ${endDay}`;
+  }
+  return `${startMonth} ${startDay} - ${endMonth} ${endDay}`;
+}
+
 export function History() {
   const [history, setHistory] = useState<ScheduleHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,7 +99,7 @@ export function History() {
         <div>
           <h1 className="text-3xl font-bold">Schedule Details</h1>
           <p className="text-muted-foreground mt-1">
-            Week {selectedSchedule.week_no} - {selectedSchedule.store_name} |
+            {formatDateRange(selectedSchedule.start_date, selectedSchedule.end_date)} - {selectedSchedule.store_name} |
             Generated: {formatDate(selectedSchedule.generated_at)}
           </p>
         </div>
@@ -135,6 +149,7 @@ export function History() {
             <WeeklyCalendar
               schedules={selectedSchedule.schedules}
               dailySummaries={selectedSchedule.daily_summaries}
+              startDate={selectedSchedule.start_date}
             />
           </CardContent>
         </Card>
@@ -185,7 +200,7 @@ export function History() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Generated</TableHead>
-                  <TableHead>Week</TableHead>
+                  <TableHead>Date Range</TableHead>
                   <TableHead>Store</TableHead>
                   <TableHead>Total Cost</TableHead>
                   <TableHead>Status</TableHead>
@@ -198,7 +213,7 @@ export function History() {
                     <TableCell className="font-medium">
                       {formatDate(item.generated_at)}
                     </TableCell>
-                    <TableCell>Week {item.week_no}</TableCell>
+                    <TableCell>{formatDateRange(item.start_date, item.end_date)}</TableCell>
                     <TableCell>{item.store_name}</TableCell>
                     <TableCell>${item.total_weekly_cost.toFixed(2)}</TableCell>
                     <TableCell>

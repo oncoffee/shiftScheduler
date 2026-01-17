@@ -9,6 +9,7 @@ export interface ShiftPeriod {
 export interface EmployeeDaySchedule {
   employee_name: string;
   day_of_week: string;
+  date?: string | null;  // ISO date string: "2025-01-20"
   periods: ShiftPeriod[];
   total_hours: number;
   shift_start: string | null;
@@ -26,6 +27,7 @@ export interface UnfilledPeriod {
 
 export interface DayScheduleSummary {
   day_of_week: string;
+  date?: string | null;  // ISO date string: "2025-01-20"
   total_cost: number;
   employees_scheduled: number;
   total_labor_hours: number;
@@ -34,7 +36,8 @@ export interface DayScheduleSummary {
 }
 
 export interface WeeklyScheduleResult {
-  week_no: number;
+  start_date: string;  // ISO date string: "2025-01-20"
+  end_date: string;    // ISO date string: "2025-01-26"
   store_name: string;
   generated_at: string;
   schedules: EmployeeDaySchedule[];

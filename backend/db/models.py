@@ -71,6 +71,7 @@ class ShiftPeriodEmbed(BaseModel):
 class Assignment(BaseModel):
     employee_name: str
     day_of_week: str
+    date: Optional[str] = None  # ISO date string: "2025-01-20"
     total_hours: float
     shift_start: Optional[str] = None
     shift_end: Optional[str] = None
@@ -88,6 +89,7 @@ class UnfilledPeriodEmbed(BaseModel):
 
 class DailySummary(BaseModel):
     day_of_week: str
+    date: Optional[str] = None  # ISO date string: "2025-01-20"
     total_cost: float
     employees_scheduled: int
     total_labor_hours: float
@@ -96,7 +98,8 @@ class DailySummary(BaseModel):
 
 
 class ScheduleRunDoc(Document):
-    week_no: int
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
     store_name: str
     generated_at: datetime = Field(default_factory=datetime.utcnow)
     total_weekly_cost: float
@@ -114,6 +117,6 @@ class ScheduleRunDoc(Document):
         name = "schedule_runs"
         indexes = [
             [("generated_at", -1)],
-            [("week_no", 1), ("store_name", 1)],
+            [("start_date", 1), ("end_date", 1), ("store_name", 1)],
             [("is_current", 1)],
         ]

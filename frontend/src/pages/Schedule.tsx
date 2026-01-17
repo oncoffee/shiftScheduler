@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Play, Loader2, CheckCircle, XCircle, RefreshCw, Edit3, Plus } from "lucide-react";
+import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
+import { Play, Loader2, CheckCircle, XCircle, RefreshCw, Edit3, Plus, Calendar } from "lucide-react";
 import { api } from "@/api/client";
 import { WeeklyCalendar, EditModeToolbar, ShiftDetailModal, AddShiftModal } from "@/components/schedule";
 import {
@@ -10,6 +11,37 @@ import {
   useScheduleEditContext,
 } from "@/contexts/ScheduleEditContext";
 import type { WeeklyScheduleResult, EmployeeDaySchedule } from "@/types/schedule";
+
+// Helper functions for date handling
+function getMonday(d: Date): Date {
+  const date = new Date(d);
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1); // Adjust for Sunday
+  return new Date(date.setDate(diff));
+}
+
+function getSunday(d: Date): Date {
+  const monday = getMonday(d);
+  return new Date(monday.getTime() + 6 * 24 * 60 * 60 * 1000);
+}
+
+function formatDateISO(d: Date): string {
+  return d.toISOString().split("T")[0];
+}
+
+function formatDateRange(startDate: string, endDate: string): string {
+  const start = new Date(startDate + "T00:00:00");
+  const end = new Date(endDate + "T00:00:00");
+  const startMonth = start.toLocaleString("en-US", { month: "short" });
+  const endMonth = end.toLocaleString("en-US", { month: "short" });
+  const startDay = start.getDate();
+  const endDay = end.getDate();
+
+  if (startMonth === endMonth) {
+    return `${startMonth} ${startDay} - ${endDay}`;
+  }
+  return `${startMonth} ${startDay} - ${endMonth} ${endDay}`;
+}
 
 type SolverStatus = "idle" | "running" | "success" | "error";
 
@@ -27,6 +59,11 @@ function ScheduleContent() {
     startTime?: string;
     endTime?: string;
   }>({});
+
+  // Date picker state
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [selectedStartDate, setSelectedStartDate] = useState(() => formatDateISO(getMonday(new Date())));
+  const [selectedEndDate, setSelectedEndDate] = useState(() => formatDateISO(getSunday(new Date())));
 
   const {
     localSchedules,
@@ -68,12 +105,16 @@ function ScheduleContent() {
     loadCachedSchedule();
   }, [loadCachedSchedule]);
 
-  async function runSolver() {
+  async function runSolver(startDate?: string, endDate?: string) {
     setStatus("running");
     setMessage("");
+    setShowDatePicker(false);
+
+    const start = startDate || selectedStartDate;
+    const end = endDate || selectedEndDate;
 
     try {
-      const result = await api.runSolver("vero");
+      const result = await api.runSolver("vero", start, end);
       setScheduleResult(result);
       setStatus("success");
       setMessage("Solver completed successfully!");
@@ -88,6 +129,14 @@ function ScheduleContent() {
       setStatus("error");
       setMessage(err instanceof Error ? err.message : "An error occurred");
     }
+  }
+
+  function handleRunSolverClick() {
+    setShowDatePicker(true);
+  }
+
+  function handleDatePickerConfirm() {
+    runSolver(selectedStartDate, selectedEndDate);
   }
 
   const handleShiftUpdate = useCallback(
@@ -199,7 +248,7 @@ function ScheduleContent() {
 
           <div className="flex items-center gap-4">
             <Button
-              onClick={runSolver}
+              onClick={handleRunSolverClick}
               disabled={status === "running" || hasUnsavedChanges || isSaving}
               size="lg"
             >
@@ -210,7 +259,7 @@ function ScheduleContent() {
                 </>
               ) : (
                 <>
-                  <Play className="mr-2 h-4 w-4" />
+                  <Calendar className="mr-2 h-4 w-4" />
                   Run Solver
                 </>
               )}
@@ -251,7 +300,7 @@ function ScheduleContent() {
             <CardTitle>Generated Schedule</CardTitle>
             {scheduleResult && (
               <p className="text-sm text-muted-foreground mt-1">
-                Week {scheduleResult.week_no} - {scheduleResult.store_name} |
+                {formatDateRange(scheduleResult.start_date, scheduleResult.end_date)} - {scheduleResult.store_name} |
                 Generated: {new Date(scheduleResult.generated_at).toLocaleString()}
                 {scheduleResult.is_edited && scheduleResult.last_edited_at && (
                   <span className="ml-2 text-amber-600">
@@ -270,7 +319,7 @@ function ScheduleContent() {
             )}
             {scheduleResult && scheduleId && <EditModeToolbar />}
             {scheduleResult && !hasUnsavedChanges && !isSaving && (
-              <Button variant="outline" size="sm" onClick={runSolver}>
+              <Button variant="outline" size="sm" onClick={handleRunSolverClick}>
                 <RefreshCw className="h-4 w-4 mr-1" />
                 Regenerate
               </Button>
@@ -308,6 +357,7 @@ function ScheduleContent() {
               <WeeklyCalendar
                 schedules={displaySchedules}
                 dailySummaries={displaySummaries}
+                startDate={scheduleResult?.start_date}
                 isEditMode={true}
                 onShiftUpdate={handleShiftUpdate}
                 onToggleLock={toggleShiftLock}
@@ -345,6 +395,50 @@ function ScheduleContent() {
           )}
         </CardContent>
       </Card>
+
+      {/* Date Range Picker Modal */}
+      <Dialog open={showDatePicker} onClose={() => setShowDatePicker(false)} title="Select Date Range">
+        <DialogContent>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label htmlFor="start-date" className="text-sm font-medium text-gray-700">
+                Start Date
+              </label>
+              <input
+                id="start-date"
+                type="date"
+                value={selectedStartDate}
+                onChange={(e) => setSelectedStartDate(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="end-date" className="text-sm font-medium text-gray-700">
+                End Date
+              </label>
+              <input
+                id="end-date"
+                type="date"
+                value={selectedEndDate}
+                onChange={(e) => setSelectedEndDate(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            <p className="text-sm text-gray-500 text-center">
+              Schedules will be generated for all days within this date range.
+            </p>
+          </div>
+        </DialogContent>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setShowDatePicker(false)}>
+            Cancel
+          </Button>
+          <Button onClick={handleDatePickerConfirm}>
+            <Play className="mr-2 h-4 w-4" />
+            Run Solver
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }

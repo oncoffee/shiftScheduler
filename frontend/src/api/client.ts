@@ -32,8 +32,8 @@ export const api = {
   syncAll: (passKey: string) =>
     fetchApi<SyncResult>(`/sync/all?pass_key=${passKey}`, { method: "POST" }),
 
-  runSolver: (passKey: string) =>
-    fetchApi<WeeklyScheduleResult>(`/solver/run?pass_key=${passKey}`),
+  runSolver: (passKey: string, startDate: string, endDate: string) =>
+    fetchApi<WeeklyScheduleResult>(`/solver/run?pass_key=${passKey}&start_date=${startDate}&end_date=${endDate}`),
 
   getScheduleResults: () =>
     fetchApi<WeeklyScheduleResult | null>("/schedule/results"),
@@ -213,7 +213,8 @@ export interface SyncResult {
 
 export interface ScheduleHistoryItem {
   id: string;
-  week_no: number;
+  start_date: string;
+  end_date: string;
   store_name: string;
   generated_at: string;
   total_weekly_cost: number;

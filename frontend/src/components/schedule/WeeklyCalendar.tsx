@@ -15,13 +15,13 @@ import { DraggableShift, ShiftPreview } from "./DraggableShift";
 import { useScheduleEdit } from "@/hooks/useScheduleEdit";
 
 const DAYS_ORDER = [
-  "Sunday",
   "Monday",
   "Tuesday",
   "Wednesday",
   "Thursday",
   "Friday",
   "Saturday",
+  "Sunday",
 ];
 
 const EMPLOYEE_COLORS = [
@@ -47,6 +47,7 @@ const HOUR_SLOTS = Array.from({ length: 17 }, (_, i) => {
 interface WeeklyCalendarProps {
   schedules: EmployeeDaySchedule[];
   dailySummaries: DayScheduleSummary[];
+  startDate?: string;  // ISO date string: "2025-01-20"
   isEditMode?: boolean;
   onShiftUpdate?: (
     employeeName: string,
@@ -60,6 +61,73 @@ interface WeeklyCalendarProps {
   onToggleLock?: (employeeName: string, dayOfWeek: string) => void;
   onShiftClick?: (shift: EmployeeDaySchedule) => void;
   onEmptyClick?: (employeeName: string, dayOfWeek: string, startTime?: string, endTime?: string) => void;
+}
+
+// Helper to get the Monday of the week containing a given date
+function getMondayOfWeek(date: Date): Date {
+  const d = new Date(date);
+  const dayOfWeek = d.getDay();
+  const daysFromMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  d.setDate(d.getDate() + daysFromMonday);
+  return d;
+}
+
+// Helper to get dates for each day of the week based on start date and week offset
+function getDayDates(startDateStr: string | undefined, weekOffset: number = 0): Map<string, Date> {
+  const dayDates = new Map<string, Date>();
+  if (!startDateStr) return dayDates;
+
+  const startDate = new Date(startDateStr + "T00:00:00");
+  const monday = getMondayOfWeek(startDate);
+
+  // Apply week offset
+  monday.setDate(monday.getDate() + (weekOffset * 7));
+
+  // DAYS_ORDER is Monday-first: Mon=0, Tue=1, ..., Sun=6
+  DAYS_ORDER.forEach((day, idx) => {
+    const date = new Date(monday);
+    date.setDate(monday.getDate() + idx);
+    dayDates.set(day, date);
+  });
+
+  return dayDates;
+}
+
+// Format date to ISO string (YYYY-MM-DD) for comparison
+function formatDateToISO(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// Helper to get the full date objects for the current week
+function getWeekDatesRange(startDateStr: string | undefined, weekOffset: number = 0): { monday: Date; sunday: Date } | null {
+  if (!startDateStr) return null;
+
+  const startDate = new Date(startDateStr + "T00:00:00");
+  const monday = getMondayOfWeek(startDate);
+  monday.setDate(monday.getDate() + (weekOffset * 7));
+
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+
+  return { monday, sunday };
+}
+
+// Format a week range for display
+function formatWeekRange(monday: Date, sunday: Date): string {
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const startMonth = monthNames[monday.getMonth()];
+  const endMonth = monthNames[sunday.getMonth()];
+  const startDay = monday.getDate();
+  const endDay = sunday.getDate();
+  const year = monday.getFullYear();
+
+  if (startMonth === endMonth) {
+    return `${startMonth} ${startDay} - ${endDay}, ${year}`;
+  }
+  return `${startMonth} ${startDay} - ${endMonth} ${endDay}, ${year}`;
 }
 
 function parseTimeToHour(timeStr: string): number {
@@ -262,6 +330,7 @@ function DroppableColumn({
 export function WeeklyCalendar({
   schedules,
   dailySummaries,
+  startDate,
   isEditMode = false,
   onShiftUpdate,
   onToggleLock,
@@ -269,7 +338,12 @@ export function WeeklyCalendar({
   onEmptyClick,
 }: WeeklyCalendarProps) {
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
+  const [weekOffset, setWeekOffset] = useState(0);
   const selectedDay = DAYS_ORDER[selectedDayIndex];
+
+  // Get dates for each day based on start date and week offset
+  const dayDates = useMemo(() => getDayDates(startDate, weekOffset), [startDate, weekOffset]);
+  const weekRange = useMemo(() => getWeekDatesRange(startDate, weekOffset), [startDate, weekOffset]);
   const [activeShift, setActiveShift] = useState<EmployeeDaySchedule | null>(null);
   const [overColumn, setOverColumn] = useState<string | null>(null);
 
@@ -298,25 +372,43 @@ export function WeeklyCalendar({
     [employees]
   );
 
+  // Get the actual date for the selected day in the current week view
+  const selectedDate = useMemo(() => {
+    const date = dayDates.get(selectedDay);
+    return date ? formatDateToISO(date) : null;
+  }, [dayDates, selectedDay]);
+
   const shiftsByEmployee = useMemo(() => {
     const map = new Map<string, EmployeeDaySchedule | null>();
     employees.forEach((emp) => map.set(emp, null));
 
     schedules.forEach((schedule) => {
-      if (schedule.day_of_week === selectedDay && schedule.total_hours > 0) {
+      // Match by actual date if available, otherwise fall back to day_of_week
+      const matchesByDate = selectedDate && schedule.date === selectedDate;
+      const matchesByDay = !selectedDate && schedule.day_of_week === selectedDay;
+
+      if ((matchesByDate || matchesByDay) && schedule.total_hours > 0) {
         map.set(schedule.employee_name, schedule);
       }
     });
 
     return map;
-  }, [schedules, employees, selectedDay]);
+  }, [schedules, employees, selectedDay, selectedDate]);
+
+  const summaryByDate = useMemo(
+    () => new Map(dailySummaries.filter(s => s.date).map((s) => [s.date, s])),
+    [dailySummaries]
+  );
 
   const summaryByDay = useMemo(
     () => new Map(dailySummaries.map((s) => [s.day_of_week, s])),
     [dailySummaries]
   );
 
-  const daySummary = summaryByDay.get(selectedDay);
+  // Match by date first, then fall back to day_of_week
+  const daySummary = selectedDate
+    ? summaryByDate.get(selectedDate) || summaryByDay.get(selectedDay)
+    : summaryByDay.get(selectedDay);
   const totalCost = dailySummaries.reduce((sum, s) => sum + s.total_cost, 0);
   const hasUnfilled = daySummary && daySummary.unfilled_periods.length > 0;
 
@@ -349,8 +441,9 @@ export function WeeklyCalendar({
 
   const totalColumns = employees.length + (hasUnfilled ? 1 : 0);
 
-  const prevDay = () => setSelectedDayIndex((i) => (i === 0 ? 6 : i - 1));
-  const nextDay = () => setSelectedDayIndex((i) => (i === 6 ? 0 : i + 1));
+  const prevWeek = () => setWeekOffset((w) => w - 1);
+  const nextWeek = () => setWeekOffset((w) => w + 1);
+  const goToCurrentWeek = () => setWeekOffset(0);
 
   const handleSelectionStart = useCallback((y: number, employee: string) => {
     setIsSelecting(true);
@@ -478,32 +571,33 @@ export function WeeklyCalendar({
 
   return (
     <div className="space-y-4">
+      {/* Week navigation */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <button
-            onClick={prevDay}
+            onClick={prevWeek}
             className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+            title="Previous week"
           >
             <ChevronLeft className="w-5 h-5 text-gray-600" />
           </button>
-          <div className="flex gap-1">
-            {DAYS_ORDER.map((day, idx) => (
+          <div className="text-center min-w-[180px]">
+            <div className="text-sm font-semibold text-gray-900">
+              {weekRange ? formatWeekRange(weekRange.monday, weekRange.sunday) : "Select dates"}
+            </div>
+            {weekOffset !== 0 && (
               <button
-                key={day}
-                onClick={() => setSelectedDayIndex(idx)}
-                className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
-                  idx === selectedDayIndex
-                    ? "bg-blue-500 text-white"
-                    : "text-gray-600 hover:bg-gray-100"
-                }`}
+                onClick={goToCurrentWeek}
+                className="text-xs text-blue-600 hover:text-blue-800"
               >
-                {day.slice(0, 3)}
+                Back to schedule start
               </button>
-            ))}
+            )}
           </div>
           <button
-            onClick={nextDay}
+            onClick={nextWeek}
             className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+            title="Next week"
           >
             <ChevronRight className="w-5 h-5 text-gray-600" />
           </button>
@@ -514,6 +608,27 @@ export function WeeklyCalendar({
             {" "}· {daySummary.employees_scheduled} employees
           </div>
         )}
+      </div>
+
+      {/* Day tabs */}
+      <div className="flex items-center justify-center gap-1">
+        {DAYS_ORDER.map((day, idx) => {
+          const dayDate = dayDates.get(day);
+          const dateNum = dayDate?.getDate();
+          return (
+            <button
+              key={day}
+              onClick={() => setSelectedDayIndex(idx)}
+              className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+                idx === selectedDayIndex
+                  ? "bg-blue-500 text-white"
+                  : "text-gray-600 hover:bg-gray-100"
+              }`}
+            >
+              {day.slice(0, 3)}{dateNum !== undefined ? ` ${dateNum}` : ""}
+            </button>
+          );
+        })}
       </div>
 
       <DndContext

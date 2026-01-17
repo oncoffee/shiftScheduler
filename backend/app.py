@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -90,9 +90,19 @@ async def sync_all(pass_key: str):
 
 
 @app.get("/solver/run", response_model=WeeklyScheduleResult)
-async def run_ep(pass_key: str) -> WeeklyScheduleResult:
+async def run_ep(pass_key: str, start_date: str, end_date: str) -> WeeklyScheduleResult:
     if pass_key != SOLVER_PASS_KEY:
         raise HTTPException(status_code=422, detail="Invalid Credentials")
+
+    # Parse date strings
+    try:
+        parsed_start = date.fromisoformat(start_date)
+        parsed_end = date.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    if parsed_end < parsed_start:
+        raise HTTPException(status_code=400, detail="end_date must be after start_date")
 
     locked_shifts = []
     current_schedule = await ScheduleRunDoc.find_one(ScheduleRunDoc.is_current == True)
@@ -113,6 +123,8 @@ async def run_ep(pass_key: str) -> WeeklyScheduleResult:
 
     try:
         result = main(
+            start_date=parsed_start,
+            end_date=parsed_end,
             locked_shifts=locked_shifts if locked_shifts else None,
             staffing_requirements=staffing_requirements
         )
@@ -166,6 +178,7 @@ async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: 
             Assignment(
                 employee_name=schedule.employee_name,
                 day_of_week=schedule.day_of_week,
+                date=schedule.date,
                 total_hours=schedule.total_hours,
                 shift_start=schedule.shift_start,
                 shift_end=schedule.shift_end,
@@ -189,6 +202,7 @@ async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: 
         daily_summaries.append(
             DailySummary(
                 day_of_week=summary.day_of_week,
+                date=summary.date,
                 total_cost=summary.total_cost,
                 employees_scheduled=summary.employees_scheduled,
                 total_labor_hours=summary.total_labor_hours,
@@ -198,7 +212,8 @@ async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: 
         )
 
     schedule_run = ScheduleRunDoc(
-        week_no=result.week_no,
+        start_date=datetime.fromisoformat(result.start_date),
+        end_date=datetime.fromisoformat(result.end_date),
         store_name=result.store_name,
         generated_at=datetime.fromisoformat(result.generated_at),
         total_weekly_cost=result.total_weekly_cost,
@@ -242,6 +257,7 @@ def _schedule_run_to_result(schedule_run: ScheduleRunDoc) -> WeeklyScheduleResul
             EmployeeDaySchedule(
                 employee_name=assignment.employee_name,
                 day_of_week=assignment.day_of_week,
+                date=getattr(assignment, 'date', None),
                 periods=periods,
                 total_hours=assignment.total_hours,
                 shift_start=assignment.shift_start,
@@ -265,6 +281,7 @@ def _schedule_run_to_result(schedule_run: ScheduleRunDoc) -> WeeklyScheduleResul
         daily_summaries.append(
             DayScheduleSummary(
                 day_of_week=summary.day_of_week,
+                date=getattr(summary, 'date', None),
                 total_cost=summary.total_cost,
                 employees_scheduled=summary.employees_scheduled,
                 total_labor_hours=summary.total_labor_hours,
@@ -273,8 +290,29 @@ def _schedule_run_to_result(schedule_run: ScheduleRunDoc) -> WeeklyScheduleResul
             )
         )
 
+    # Handle backward compatibility for old schedules without dates
+    if schedule_run.start_date:
+        start_date_str = schedule_run.start_date.strftime("%Y-%m-%d")
+    else:
+        # Fallback for old data - use generated_at date and derive Monday of that week
+        gen_date = schedule_run.generated_at.date()
+        days_since_monday = gen_date.weekday()
+        monday = gen_date - timedelta(days=days_since_monday)
+        start_date_str = monday.strftime("%Y-%m-%d")
+
+    if schedule_run.end_date:
+        end_date_str = schedule_run.end_date.strftime("%Y-%m-%d")
+    else:
+        # Fallback - assume week schedule (Monday to Sunday)
+        gen_date = schedule_run.generated_at.date()
+        days_since_monday = gen_date.weekday()
+        monday = gen_date - timedelta(days=days_since_monday)
+        sunday = monday + timedelta(days=6)
+        end_date_str = sunday.strftime("%Y-%m-%d")
+
     return WeeklyScheduleResult(
-        week_no=schedule_run.week_no,
+        start_date=start_date_str,
+        end_date=end_date_str,
         store_name=schedule_run.store_name,
         generated_at=schedule_run.generated_at.isoformat(),
         schedules=schedules,
@@ -299,19 +337,39 @@ async def get_schedule_history(limit: int = 20, skip: int = 0):
         .to_list()
     )
 
-    return [
-        {
+    results = []
+    for run in runs:
+        # Handle backward compatibility for old schedules without dates
+        if run.start_date:
+            start_date_str = run.start_date.strftime("%Y-%m-%d")
+        else:
+            gen_date = run.generated_at.date()
+            days_since_monday = gen_date.weekday()
+            monday = gen_date - timedelta(days=days_since_monday)
+            start_date_str = monday.strftime("%Y-%m-%d")
+
+        if run.end_date:
+            end_date_str = run.end_date.strftime("%Y-%m-%d")
+        else:
+            gen_date = run.generated_at.date()
+            days_since_monday = gen_date.weekday()
+            monday = gen_date - timedelta(days=days_since_monday)
+            sunday = monday + timedelta(days=6)
+            end_date_str = sunday.strftime("%Y-%m-%d")
+
+        results.append({
             "id": str(run.id),
-            "week_no": run.week_no,
+            "start_date": start_date_str,
+            "end_date": end_date_str,
             "store_name": run.store_name,
             "generated_at": run.generated_at.isoformat(),
             "total_weekly_cost": run.total_weekly_cost,
             "status": run.status,
             "has_warnings": run.has_warnings,
             "is_current": run.is_current,
-        }
-        for run in runs
-    ]
+        })
+
+    return results
 
 
 @app.get("/schedule/{schedule_id}")

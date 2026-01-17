@@ -105,7 +105,8 @@ def test_solver_run_accepts_valid_pass_key(client, mock_dependencies, mock_db):
     from schemas import WeeklyScheduleResult
 
     mock_result = WeeklyScheduleResult(
-        week_no=1,
+        start_date="2024-01-15",
+        end_date="2024-01-21",
         store_name="Test Store",
         generated_at="2024-01-15T10:00:00",
         schedules=[],
@@ -121,7 +122,7 @@ def test_solver_run_accepts_valid_pass_key(client, mock_dependencies, mock_db):
         "app.SOLVER_PASS_KEY", "testkey"
     ), patch("app._persist_schedule_result", new_callable=AsyncMock):
         mock_main.return_value = mock_result
-        response = client.get("/solver/run?pass_key=testkey")
+        response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
 
         assert response.status_code == 200
         data = response.json()

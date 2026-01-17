@@ -6,7 +6,7 @@ import pandas as pd
 from gurobipy import GRB
 import numpy as np
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date as date_type
 
 from schemas import (
     ShiftPeriod,
@@ -15,6 +15,25 @@ from schemas import (
     WeeklyScheduleResult,
     UnfilledPeriod,
 )
+
+
+DAY_OF_WEEK_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def get_week_dates(start_date: date_type) -> dict[str, date_type]:
+    """Return {day_of_week: actual_date} for the week containing start_date.
+    Aligns to Monday as the start of the week."""
+    days_since_monday = start_date.weekday()  # Monday = 0
+    monday = start_date - timedelta(days=days_since_monday)
+    return {
+        "Monday": monday,
+        "Tuesday": monday + timedelta(days=1),
+        "Wednesday": monday + timedelta(days=2),
+        "Thursday": monday + timedelta(days=3),
+        "Friday": monday + timedelta(days=4),
+        "Saturday": monday + timedelta(days=5),
+        "Sunday": monday + timedelta(days=6),
+    }
 
 
 def period_to_time(store_start_time, period_index: int) -> str:
@@ -32,6 +51,7 @@ def convert_schedule_to_structured(
     unfilled_periods: list[UnfilledPeriod] = None,
     dummy_worker_cost: float = 0,
     min_shift_hours: float = 3.0,
+    actual_date: str | None = None,
 ) -> tuple[list[EmployeeDaySchedule], DayScheduleSummary]:
     """Convert pivot table to structured schedule data"""
     employee_schedules = []
@@ -65,6 +85,7 @@ def convert_schedule_to_structured(
             EmployeeDaySchedule(
                 employee_name=employee,
                 day_of_week=day_of_week,
+                date=actual_date,
                 periods=periods,
                 total_hours=total_hours,
                 shift_start=shift_start,
@@ -78,6 +99,7 @@ def convert_schedule_to_structured(
 
     summary = DayScheduleSummary(
         day_of_week=day_of_week,
+        date=actual_date,
         total_cost=cost,
         employees_scheduled=employees_scheduled,
         total_labor_hours=total_labor_hours,
@@ -162,7 +184,12 @@ def extract_schedule_dataframe(model) -> pd.DataFrame:
     return df_wide[cols]
 
 
-def main(locked_shifts: list[dict] | None = None, staffing_requirements: list[dict] | None = None) -> WeeklyScheduleResult:
+def main(
+    start_date: date_type,
+    end_date: date_type,
+    locked_shifts: list[dict] | None = None,
+    staffing_requirements: list[dict] | None = None
+) -> WeeklyScheduleResult:
     data_import.load_data()
     setup_logging()
 
@@ -176,13 +203,25 @@ def main(locked_shifts: list[dict] | None = None, staffing_requirements: list[di
     total_weekly_cost = 0.0
     total_dummy_cost = 0.0
     total_short_shift_cost = 0.0
-    week_no = 0
     store_name = ""
 
+    # Build a map of day_of_week -> store data for quick lookup
+    store_by_day = {}
     for s in data_import.stores:
-        week_no = s.week_no
-        store_name = s.store_name
-        day_of_week = s.day_of_week
+        store_name = s.store_name  # Capture store name
+        store_by_day[s.day_of_week] = s
+
+    # Iterate through each date in the range
+    current_date = start_date
+    while current_date <= end_date:
+        day_of_week = DAY_OF_WEEK_ORDER[current_date.weekday()]
+        actual_date_str = current_date.isoformat()
+
+        # Check if we have store data for this day
+        s = store_by_day.get(day_of_week)
+        if not s:
+            current_date += timedelta(days=1)
+            continue
 
         store_start_time = parser.parse(s.start_time).time()
         store_end_time = parser.parse(s.end_time).time()
@@ -347,15 +386,20 @@ def main(locked_shifts: list[dict] | None = None, staffing_requirements: list[di
             unfilled_periods=unfilled,
             dummy_worker_cost=day_dummy_cost,
             min_shift_hours=data_import.config.min_shift_hours,
+            actual_date=actual_date_str,
         )
         all_schedules.extend(day_schedules)
         daily_summaries.append(day_summary)
         total_weekly_cost += m.objVal
 
+        # Move to next date
+        current_date += timedelta(days=1)
+
     has_warnings = total_dummy_cost > 0 or total_short_shift_cost > 0
 
     return WeeklyScheduleResult(
-        week_no=week_no,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
         store_name=store_name,
         generated_at=datetime.now().isoformat(),
         schedules=all_schedules,

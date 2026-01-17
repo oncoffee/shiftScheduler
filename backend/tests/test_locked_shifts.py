@@ -96,7 +96,8 @@ class TestLockedShiftsPreservation:
 
     def test_solver_preserves_locked_state_in_response(self, client, mock_db):
         mock_result = WeeklyScheduleResult(
-            week_no=1,
+            start_date="2024-01-15",
+            end_date="2024-01-21",
             store_name="Test Store",
             generated_at="2024-01-15T10:00:00",
             schedules=[
@@ -137,7 +138,7 @@ class TestLockedShiftsPreservation:
             "app.SOLVER_PASS_KEY", "testkey"
         ), patch("app._persist_schedule_result", new_callable=AsyncMock):
             mock_main.return_value = mock_result
-            response = client.get("/solver/run?pass_key=testkey")
+            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 200
             data = response.json()
@@ -162,7 +163,7 @@ class TestSolverErrorHandling:
             mock_main.side_effect = ValueError(
                 "Schedule is infeasible for Monday. Check locked shifts and availability."
             )
-            response = client.get("/solver/run?pass_key=testkey")
+            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 400
             assert "infeasible" in response.json()["detail"].lower()
@@ -172,7 +173,7 @@ class TestSolverErrorHandling:
 
         with patch("app.main") as mock_main, patch("app.SOLVER_PASS_KEY", "testkey"):
             mock_main.side_effect = ValueError("Solver failed for Tuesday with status 3")
-            response = client.get("/solver/run?pass_key=testkey")
+            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 400
             assert "Tuesday" in response.json()["detail"]
@@ -203,7 +204,8 @@ class TestLockedShiftsExtraction:
         mock_db["ScheduleRunDoc"].find_one = AsyncMock(return_value=mock_current_schedule)
 
         mock_result = WeeklyScheduleResult(
-            week_no=1,
+            start_date="2024-01-15",
+            end_date="2024-01-21",
             store_name="Test Store",
             generated_at="2024-01-15T10:00:00",
             schedules=[create_schedule_with_periods("Alice", "Monday", 1.0)],
@@ -216,7 +218,7 @@ class TestLockedShiftsExtraction:
             "app.SOLVER_PASS_KEY", "testkey"
         ), patch("app._persist_schedule_result", new_callable=AsyncMock):
             mock_main.return_value = mock_result
-            response = client.get("/solver/run?pass_key=testkey")
+            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 200
             mock_main.assert_called_once()
@@ -240,7 +242,8 @@ class TestLockedShiftsExtraction:
         mock_db["ScheduleRunDoc"].find_one = AsyncMock(return_value=mock_current_schedule)
 
         mock_result = WeeklyScheduleResult(
-            week_no=1,
+            start_date="2024-01-15",
+            end_date="2024-01-21",
             store_name="Test Store",
             generated_at="2024-01-15T10:00:00",
             schedules=[],
@@ -253,7 +256,7 @@ class TestLockedShiftsExtraction:
             "app.SOLVER_PASS_KEY", "testkey"
         ), patch("app._persist_schedule_result", new_callable=AsyncMock):
             mock_main.return_value = mock_result
-            response = client.get("/solver/run?pass_key=testkey")
+            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 200
             call_args = mock_main.call_args
@@ -272,7 +275,8 @@ class TestLockedShiftsExtraction:
         mock_db["ScheduleRunDoc"].find_one = AsyncMock(return_value=mock_current_schedule)
 
         mock_result = WeeklyScheduleResult(
-            week_no=1,
+            start_date="2024-01-15",
+            end_date="2024-01-21",
             store_name="Test Store",
             generated_at="2024-01-15T10:00:00",
             schedules=[],
@@ -285,7 +289,7 @@ class TestLockedShiftsExtraction:
             "app.SOLVER_PASS_KEY", "testkey"
         ), patch("app._persist_schedule_result", new_callable=AsyncMock):
             mock_main.return_value = mock_result
-            response = client.get("/solver/run?pass_key=testkey")
+            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 200
             call_args = mock_main.call_args

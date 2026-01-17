@@ -128,7 +128,8 @@ class TestWeeklyScheduleResultValidation:
     def test_valid_weekly_result(self):
         """A WeeklyScheduleResult with valid shifts passes validation."""
         result = WeeklyScheduleResult(
-            week_no=1,
+            start_date="2024-01-15",
+            end_date="2024-01-21",
             store_name="Test Store",
             generated_at="2024-01-15T10:00:00",
             schedules=[
@@ -153,7 +154,8 @@ class TestWeeklyScheduleResultValidation:
     def test_invalid_weekly_result(self):
         """A WeeklyScheduleResult with short shifts fails validation."""
         result = WeeklyScheduleResult(
-            week_no=1,
+            start_date="2024-01-15",
+            end_date="2024-01-21",
             store_name="Test Store",
             generated_at="2024-01-15T10:00:00",
             schedules=[

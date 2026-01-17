@@ -13,6 +13,7 @@ class ShiftPeriod(BaseModel):
 class EmployeeDaySchedule(BaseModel):
     employee_name: str
     day_of_week: str
+    date: str | None = None  # ISO date string: "2025-01-20"
     periods: list[ShiftPeriod]
     total_hours: float
     shift_start: str | None
@@ -30,6 +31,7 @@ class UnfilledPeriod(BaseModel):
 
 class DayScheduleSummary(BaseModel):
     day_of_week: str
+    date: str | None = None  # ISO date string: "2025-01-20"
     total_cost: float
     employees_scheduled: int
     total_labor_hours: float
@@ -38,7 +40,8 @@ class DayScheduleSummary(BaseModel):
 
 
 class WeeklyScheduleResult(BaseModel):
-    week_no: int
+    start_date: str  # ISO date string: "2025-01-20"
+    end_date: str    # ISO date string: "2025-01-26"
     store_name: str
     generated_at: str
     schedules: list[EmployeeDaySchedule]
