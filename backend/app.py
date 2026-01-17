@@ -133,32 +133,18 @@ async def run_ep(pass_key: str, start_date: str, end_date: str) -> WeeklySchedul
 
     await _persist_schedule_result(result, locked_shifts=locked_shifts if locked_shifts else None)
 
-    if locked_shifts:
-        locked_lookup = {}
-        for ls in locked_shifts:
-            key = (ls["employee_name"], ls["day_of_week"])
-            locked_lookup[key] = set(ls["periods"])
-
-        for schedule in result.schedules:
-            schedule_key = (schedule.employee_name, schedule.day_of_week)
-            if schedule_key in locked_lookup:
-                schedule.is_locked = True
-
-    return result
+    merged_schedule = await ScheduleRunDoc.find_one(ScheduleRunDoc.is_current == True)
+    return _schedule_run_to_result(merged_schedule)
 
 
 async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: list[dict] | None = None):
-    await ScheduleRunDoc.find(ScheduleRunDoc.is_current == True).update_many(
-        {"$set": {"is_current": False}}
-    )
-
     locked_lookup = {}
     if locked_shifts:
         for ls in locked_shifts:
             key = (ls["employee_name"], ls["day_of_week"])
             locked_lookup[key] = set(ls["periods"])
 
-    assignments = []
+    new_assignments = []
     for schedule in result.schedules:
         schedule_key = (schedule.employee_name, schedule.day_of_week)
         is_schedule_locked = schedule_key in locked_lookup
@@ -174,7 +160,7 @@ async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: 
             )
             for p in schedule.periods
         ]
-        assignments.append(
+        new_assignments.append(
             Assignment(
                 employee_name=schedule.employee_name,
                 day_of_week=schedule.day_of_week,
@@ -188,7 +174,7 @@ async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: 
             )
         )
 
-    daily_summaries = []
+    new_daily_summaries = []
     for summary in result.daily_summaries:
         unfilled = [
             UnfilledPeriodEmbed(
@@ -199,7 +185,7 @@ async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: 
             )
             for u in summary.unfilled_periods
         ]
-        daily_summaries.append(
+        new_daily_summaries.append(
             DailySummary(
                 day_of_week=summary.day_of_week,
                 date=summary.date,
@@ -211,21 +197,76 @@ async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: 
             )
         )
 
-    schedule_run = ScheduleRunDoc(
-        start_date=datetime.fromisoformat(result.start_date),
-        end_date=datetime.fromisoformat(result.end_date),
-        store_name=result.store_name,
-        generated_at=datetime.fromisoformat(result.generated_at),
-        total_weekly_cost=result.total_weekly_cost,
-        total_dummy_worker_cost=result.total_dummy_worker_cost,
-        total_short_shift_penalty=result.total_short_shift_penalty,
-        status=result.status,
-        has_warnings=result.has_warnings,
-        is_current=True,
-        daily_summaries=daily_summaries,
-        assignments=assignments,
-    )
-    await schedule_run.insert()
+    new_start = date.fromisoformat(result.start_date)
+    new_end = date.fromisoformat(result.end_date)
+    new_dates = set(a.date for a in new_assignments if a.date)
+
+    current_schedule = await ScheduleRunDoc.find_one(ScheduleRunDoc.is_current == True)
+
+    if current_schedule and current_schedule.store_name == result.store_name:
+        existing_assignments = [
+            a for a in current_schedule.assignments
+            if a.date and a.date not in new_dates
+        ]
+        existing_summaries = [
+            s for s in current_schedule.daily_summaries
+            if s.date and s.date not in new_dates
+        ]
+
+        merged_assignments = existing_assignments + new_assignments
+        merged_summaries = existing_summaries + new_daily_summaries
+
+        all_dates = []
+        for a in merged_assignments:
+            if a.date:
+                all_dates.append(date.fromisoformat(a.date))
+        if current_schedule.start_date:
+            all_dates.append(current_schedule.start_date.date())
+        if current_schedule.end_date:
+            all_dates.append(current_schedule.end_date.date())
+        all_dates.extend([new_start, new_end])
+
+        merged_start = min(all_dates)
+        merged_end = max(all_dates)
+
+        total_cost = sum(s.total_cost for s in merged_summaries)
+        total_dummy = sum(s.dummy_worker_cost for s in merged_summaries)
+        total_short_shift = result.total_short_shift_penalty
+
+        await current_schedule.set({
+            "start_date": datetime.combine(merged_start, datetime.min.time()),
+            "end_date": datetime.combine(merged_end, datetime.min.time()),
+            "generated_at": datetime.fromisoformat(result.generated_at),
+            "total_weekly_cost": total_cost,
+            "total_dummy_worker_cost": total_dummy,
+            "total_short_shift_penalty": total_short_shift,
+            "status": result.status,
+            "has_warnings": total_dummy > 0 or total_short_shift > 0,
+            "is_edited": False,
+            "last_edited_at": None,
+            "daily_summaries": merged_summaries,
+            "assignments": merged_assignments,
+        })
+    else:
+        await ScheduleRunDoc.find(ScheduleRunDoc.is_current == True).update_many(
+            {"$set": {"is_current": False}}
+        )
+
+        schedule_run = ScheduleRunDoc(
+            start_date=datetime.fromisoformat(result.start_date),
+            end_date=datetime.fromisoformat(result.end_date),
+            store_name=result.store_name,
+            generated_at=datetime.fromisoformat(result.generated_at),
+            total_weekly_cost=result.total_weekly_cost,
+            total_dummy_worker_cost=result.total_dummy_worker_cost,
+            total_short_shift_penalty=result.total_short_shift_penalty,
+            status=result.status,
+            has_warnings=result.has_warnings,
+            is_current=True,
+            daily_summaries=new_daily_summaries,
+            assignments=new_assignments,
+        )
+        await schedule_run.insert()
 
 
 @app.get("/schedule/results")

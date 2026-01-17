@@ -12,16 +12,30 @@ const DAYS_OF_WEEK = [
   "Saturday",
 ];
 
+function formatDateToISO(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 interface TodayShiftsCardProps {
   schedules: EmployeeDaySchedule[];
 }
 
 export function TodayShiftsCard({ schedules }: TodayShiftsCardProps) {
-  const today = DAYS_OF_WEEK[new Date().getDay()];
+  const now = new Date();
+  const todayISO = formatDateToISO(now);
+  const todayDayOfWeek = DAYS_OF_WEEK[now.getDay()];
 
-  // Get today's schedules
   const todaySchedules = schedules
-    .filter((s) => s.day_of_week === today && s.total_hours > 0)
+    .filter((s) => {
+      if (s.total_hours === 0) return false;
+      if (s.date) {
+        return s.date === todayISO;
+      }
+      return s.day_of_week === todayDayOfWeek;
+    })
     .sort((a, b) => {
       if (!a.shift_start || !b.shift_start) return 0;
       return a.shift_start.localeCompare(b.shift_start);
@@ -33,7 +47,7 @@ export function TodayShiftsCard({ schedules }: TodayShiftsCardProps) {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-sm font-medium">
-          Today's Shifts ({today})
+          Today's Shifts ({todayDayOfWeek})
         </CardTitle>
         <Clock className="h-4 w-4 text-muted-foreground" />
       </CardHeader>

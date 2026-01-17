@@ -385,6 +385,7 @@ function ScheduleContent() {
                 onAdd={addNewShift}
                 employees={uniqueEmployees}
                 days={uniqueDays}
+                scheduleStartDate={scheduleResult?.start_date}
                 initialEmployee={addShiftInitial.employee}
                 initialDay={addShiftInitial.day}
                 initialStartTime={addShiftInitial.startTime}
@@ -435,8 +436,13 @@ function ScheduleContent() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
+            {selectedStartDate < minDate && (
+              <p className="text-sm text-red-500 text-center">
+                Start date cannot be in the past. Schedules can only be created for tomorrow onwards.
+              </p>
+            )}
             <p className="text-sm text-gray-500 text-center">
-              Schedules will be generated for all days within this date range.
+              Schedules can only be created for future dates (starting tomorrow).
             </p>
           </div>
         </DialogContent>
@@ -444,7 +450,7 @@ function ScheduleContent() {
           <Button variant="outline" onClick={() => setShowDatePicker(false)}>
             Cancel
           </Button>
-          <Button onClick={handleDatePickerConfirm}>
+          <Button onClick={handleDatePickerConfirm} disabled={selectedStartDate < minDate}>
             <Play className="mr-2 h-4 w-4" />
             Run Solver
           </Button>

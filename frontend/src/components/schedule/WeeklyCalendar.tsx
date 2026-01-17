@@ -247,6 +247,7 @@ function SelectionPreview({ startY, endY }: SelectionPreviewProps) {
 interface DroppableColumnProps {
   employeeName: string;
   isEditMode: boolean;
+  isPastDate: boolean;
   height: number;
   isOver: boolean;
   children: React.ReactNode;
@@ -262,6 +263,7 @@ interface DroppableColumnProps {
 function DroppableColumn({
   employeeName,
   isEditMode,
+  isPastDate,
   height,
   isOver,
   children,
@@ -281,7 +283,7 @@ function DroppableColumn({
   const handleMouseDown = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     if (target.closest("button") || target.closest("[data-shift-block]")) return;
-    if (!isEditMode) return;
+    if (!isEditMode || isPastDate) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const y = e.clientY - rect.top;
     onSelectionStart(y, employeeName);
@@ -303,13 +305,14 @@ function DroppableColumn({
   const handleMouseLeave = () => {};
 
   const isThisColumnSelecting = isSelecting && selectingEmployee === employeeName;
+  const canEdit = isEditMode && !isPastDate;
 
   return (
     <div
       ref={setNodeRef}
       className={`relative border-l border-gray-100 transition-colors select-none ${
-        isEditMode ? "bg-blue-50/20 cursor-crosshair hover:bg-blue-50/40" : ""
-      } ${isOver ? "bg-green-100/50 ring-2 ring-green-400 ring-inset" : ""}`}
+        canEdit ? "bg-blue-50/20 cursor-crosshair hover:bg-blue-50/40" : ""
+      } ${isPastDate ? "bg-gray-50/50" : ""} ${isOver && !isPastDate ? "bg-green-100/50 ring-2 ring-green-400 ring-inset" : ""}`}
       style={{ height }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -360,6 +363,7 @@ export function WeeklyCalendar({
   const [weekOffset, setWeekOffset] = useState(0);
   const hasInitializedWeek = useRef(false);
   const selectedDay = DAYS_ORDER[selectedDayIndex];
+  const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
     if (startDate && !hasInitializedWeek.current) {
@@ -368,7 +372,13 @@ export function WeeklyCalendar({
     }
   }, [startDate]);
 
-  // Get dates for each day based on start date and week offset
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
   const dayDates = useMemo(() => getDayDates(startDate, weekOffset), [startDate, weekOffset]);
   const weekRange = useMemo(() => getWeekDatesRange(startDate, weekOffset), [startDate, weekOffset]);
   const [activeShift, setActiveShift] = useState<EmployeeDaySchedule | null>(null);
@@ -399,11 +409,29 @@ export function WeeklyCalendar({
     [employees]
   );
 
-  // Get the actual date for the selected day in the current week view
   const selectedDate = useMemo(() => {
     const date = dayDates.get(selectedDay);
     return date ? formatDateToISO(date) : null;
   }, [dayDates, selectedDay]);
+
+  const isViewingToday = selectedDate === formatDateToISO(new Date());
+  const isViewingPastDate = useMemo(() => {
+    if (!selectedDate) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const viewDate = new Date(selectedDate + "T00:00:00");
+    return viewDate < today;
+  }, [selectedDate]);
+
+  const currentTimePosition = useMemo(() => {
+    const hours = currentTime.getHours();
+    const minutes = currentTime.getMinutes();
+    const timeInHours = hours + minutes / 60;
+    if (timeInHours < START_HOUR || timeInHours > START_HOUR + HOUR_SLOTS.length) {
+      return null;
+    }
+    return (timeInHours - START_HOUR) * HOUR_HEIGHT;
+  }, [currentTime]);
 
   const shiftsByEmployee = useMemo(() => {
     const map = new Map<string, EmployeeDaySchedule | null>();
@@ -478,11 +506,12 @@ export function WeeklyCalendar({
   const isAtTodayWeek = weekOffset === todayWeekOffset;
 
   const handleSelectionStart = useCallback((y: number, employee: string) => {
+    if (isViewingPastDate) return;
     setIsSelecting(true);
     setSelectionStartY(y);
     setSelectionEndY(y);
     setSelectingEmployee(employee);
-  }, []);
+  }, [isViewingPastDate]);
 
   const handleSelectionMove = useCallback((y: number, maxHeight: number) => {
     if (!isSelecting) return;
@@ -491,7 +520,7 @@ export function WeeklyCalendar({
   }, [isSelecting]);
 
   const handleSelectionEnd = useCallback(() => {
-    if (isSelecting && selectionStartY !== null && selectionEndY !== null && selectingEmployee) {
+    if (isSelecting && selectionStartY !== null && selectionEndY !== null && selectingEmployee && !isViewingPastDate) {
       const startY = Math.min(selectionStartY, selectionEndY);
       const endY = Math.max(selectionStartY, selectionEndY);
 
@@ -507,7 +536,7 @@ export function WeeklyCalendar({
     setSelectionStartY(null);
     setSelectionEndY(null);
     setSelectingEmployee(null);
-  }, [isSelecting, selectionStartY, selectionEndY, selectingEmployee, selectedDay, onEmptyClick]);
+  }, [isSelecting, selectionStartY, selectionEndY, selectingEmployee, selectedDay, onEmptyClick, isViewingPastDate]);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     setIsSelecting(false);
@@ -706,9 +735,18 @@ export function WeeklyCalendar({
           </div>
 
           <div
-            className="grid"
+            className="grid relative"
             style={{ gridTemplateColumns: `70px repeat(${totalColumns}, minmax(100px, 1fr))` }}
           >
+            {isViewingToday && currentTimePosition !== null && (
+              <div
+                className="absolute left-[70px] right-0 z-20 pointer-events-none flex items-center"
+                style={{ top: currentTimePosition }}
+              >
+                <div className="w-3 h-3 rounded-full bg-red-500 -ml-1.5 shrink-0" />
+                <div className="flex-1 h-0.5 bg-red-500" />
+              </div>
+            )}
             <div className="border-r border-gray-100">
               {HOUR_SLOTS.map(({ hour, label }) => (
                 <div
@@ -731,6 +769,7 @@ export function WeeklyCalendar({
                   key={emp}
                   employeeName={emp}
                   isEditMode={isEditMode}
+                  isPastDate={isViewingPastDate}
                   height={HOUR_SLOTS.length * HOUR_HEIGHT}
                   isOver={isColumnOver}
                   isSelecting={isSelecting}

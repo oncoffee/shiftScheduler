@@ -9,6 +9,7 @@ interface AddShiftModalProps {
   onAdd: (employeeName: string, dayOfWeek: string, startTime: string, endTime: string) => void;
   employees: string[];
   days: string[];
+  scheduleStartDate?: string;
   initialEmployee?: string;
   initialDay?: string;
   initialStartTime?: string;
@@ -46,12 +47,35 @@ function generateEndTimeOptions(): string[] {
   return times;
 }
 
+const DAYS_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function getDateForDay(scheduleStartDate: string, dayOfWeek: string): Date {
+  const start = new Date(scheduleStartDate + "T00:00:00");
+  const startDay = start.getDay();
+  const startMonday = new Date(start);
+  startMonday.setDate(start.getDate() - (startDay === 0 ? 6 : startDay - 1));
+
+  const dayIndex = DAYS_ORDER.indexOf(dayOfWeek);
+  const targetDate = new Date(startMonday);
+  targetDate.setDate(startMonday.getDate() + dayIndex);
+  return targetDate;
+}
+
+function isDateInPast(date: Date): boolean {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const compareDate = new Date(date);
+  compareDate.setHours(0, 0, 0, 0);
+  return compareDate < today;
+}
+
 export function AddShiftModal({
   open,
   onClose,
   onAdd,
   employees,
   days,
+  scheduleStartDate,
   initialEmployee,
   initialDay,
   initialStartTime,
@@ -65,14 +89,23 @@ export function AddShiftModal({
   const startTimeOptions = useMemo(() => generateStartTimeOptions(), []);
   const endTimeOptions = useMemo(() => generateEndTimeOptions(), []);
 
+  const futureDays = useMemo(() => {
+    if (!scheduleStartDate) return days;
+    return days.filter((day) => {
+      const dayDate = getDateForDay(scheduleStartDate, day);
+      return !isDateInPast(dayDate);
+    });
+  }, [days, scheduleStartDate]);
+
   useMemo(() => {
     if (open) {
       setSelectedEmployee(initialEmployee || (employees.length > 0 ? employees[0] : ""));
-      setSelectedDay(initialDay || (days.length > 0 ? days[0] : ""));
+      const validInitialDay = initialDay && futureDays.includes(initialDay) ? initialDay : "";
+      setSelectedDay(validInitialDay || (futureDays.length > 0 ? futureDays[0] : ""));
       setStartTime(initialStartTime || "09:00");
       setEndTime(initialEndTime || "17:00");
     }
-  }, [open, initialEmployee, initialDay, initialStartTime, initialEndTime, employees, days]);
+  }, [open, initialEmployee, initialDay, initialStartTime, initialEndTime, employees, futureDays]);
 
   const handleClose = () => {
     setSelectedEmployee("");
@@ -138,12 +171,17 @@ export function AddShiftModal({
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="">Select a day...</option>
-              {days.map((day) => (
+              {futureDays.map((day) => (
                 <option key={day} value={day}>
                   {day}
                 </option>
               ))}
             </select>
+            {futureDays.length === 0 && (
+              <p className="text-sm text-amber-600 mt-2">
+                All days in this schedule are in the past
+              </p>
+            )}
           </div>
 
           <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
