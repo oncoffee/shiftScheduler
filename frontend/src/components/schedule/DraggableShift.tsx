@@ -1,7 +1,21 @@
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { AlertTriangle, GripVertical, Lock, LockOpen } from "lucide-react";
+import { AlertTriangle, GripVertical, Lock, LockOpen, Coffee } from "lucide-react";
 import type { EmployeeDaySchedule } from "@/types/schedule";
+
+// Helper to get break periods info from shift
+function getBreakInfo(shift: EmployeeDaySchedule): { hasBreak: boolean; breakTime: string | null } {
+  const breakPeriods = shift.periods?.filter(p => p.is_break) ?? [];
+  if (breakPeriods.length === 0) {
+    return { hasBreak: false, breakTime: null };
+  }
+  // Get the first break period's time
+  const firstBreak = breakPeriods[0];
+  return {
+    hasBreak: true,
+    breakTime: `${firstBreak.start_time} - ${firstBreak.end_time}`,
+  };
+}
 
 interface DraggableShiftProps {
   shift: EmployeeDaySchedule;
@@ -31,6 +45,7 @@ export function DraggableShift({
 }: DraggableShiftProps) {
   const isLocked = shift.is_locked ?? false;
   const effectivelyDisabled = disabled || isLocked;
+  const { hasBreak, breakTime } = getBreakInfo(shift);
 
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
@@ -152,6 +167,12 @@ export function DraggableShift({
           <span className="text-gray-500 ml-1">(locked)</span>
         )}
       </div>
+      {hasBreak && (
+        <div className="flex items-center gap-1 mt-1 px-1.5 py-0.5 bg-amber-100 rounded text-xs text-amber-700">
+          <Coffee className="w-3 h-3" />
+          <span>Break {breakTime}</span>
+        </div>
+      )}
 
       {!disabled && !isLocked && (
         <div
@@ -178,6 +199,8 @@ export function ShiftPreview({
   height,
   formatTime,
 }: ShiftPreviewProps) {
+  const { hasBreak } = getBreakInfo(shift);
+
   return (
     <div
       className={`rounded-lg px-3 py-2 shadow-xl ring-2 ring-blue-500 ${
@@ -197,6 +220,9 @@ export function ShiftPreview({
         </span>
         {shift.is_short_shift && (
           <AlertTriangle className="w-3 h-3 text-orange-500 flex-shrink-0" />
+        )}
+        {hasBreak && (
+          <Coffee className="w-3 h-3 text-amber-600 flex-shrink-0" />
         )}
       </div>
       <div className="text-xs text-gray-600 mt-0.5">

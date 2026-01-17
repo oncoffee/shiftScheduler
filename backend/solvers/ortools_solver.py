@@ -75,6 +75,15 @@ class ORToolsSolver:
             max_short = int(config.min_shift_hours * SCALE)
             short_shift_hours[b] = model.NewIntVar(0, max_short, f"short_shift_{b}")
 
+        on_break = {}
+        for b in employees:
+            for t in time_periods:
+                on_break[(b, t)] = model.NewBoolVar(f"break_{b}_{t}")
+
+        needs_break = {}
+        for b in employees:
+            needs_break[b] = model.NewBoolVar(f"needs_break_{b}")
+
         # Objective: minimize labor cost + dummy worker penalties + short shift penalties
         # Scale hourly rates to integers
         objective_terms = []
@@ -99,10 +108,11 @@ class ORToolsSolver:
             )
 
         # Constraint: minimum workers per period (skip first period)
+        # Workers on break don't count toward minimum staffing
         for t_idx in range(1, T):
             t = time_periods[t_idx]
             model.Add(
-                sum(scheduled[(b, t)] for b in employees) + dummy[t]
+                sum(scheduled[(b, t)] - on_break[(b, t)] for b in employees) + dummy[t]
                 >= problem.minimum_workers[t_idx]
             )
 
@@ -161,6 +171,36 @@ class ORToolsSolver:
                         model.Add(scheduled[(b, t)] == 0)
                     # If avail_val == 1, no constraint needed (can be 0 or 1)
 
+        if config.meal_break_enabled:
+            meal_break_threshold_periods = int(config.meal_break_threshold_hours * 2)
+
+            for b in employees:
+                total_periods = sum(scheduled[(b, t)] for t in time_periods)
+
+                exceeds_threshold = model.NewBoolVar(f"exceeds_threshold_{b}")
+
+                model.Add(total_periods >= meal_break_threshold_periods + 1).OnlyEnforceIf(exceeds_threshold)
+                model.Add(total_periods <= meal_break_threshold_periods).OnlyEnforceIf(exceeds_threshold.Not())
+
+                model.AddImplication(exceeds_threshold, needs_break[b])
+
+                for t_idx, t in enumerate(time_periods):
+                    model.AddImplication(on_break[(b, t)], scheduled[(b, t)])
+
+                model.Add(
+                    sum(on_break[(b, t)] for t in time_periods)
+                    >= config.meal_break_duration_periods
+                ).OnlyEnforceIf(needs_break[b])
+
+                for t_idx, t in enumerate(time_periods):
+                    if t_idx > 0 and t_idx < T - 1:
+                        t_prev = time_periods[t_idx - 1]
+                        t_next = time_periods[t_idx + 1]
+                        model.AddImplication(on_break[(b, t)], scheduled[(b, t_prev)])
+                        model.AddImplication(on_break[(b, t)], scheduled[(b, t_next)])
+                    else:
+                        model.Add(on_break[(b, t)] == 0)
+
         # Solve
         solver = cp_model.CpSolver()
         solver.parameters.log_search_progress = False
@@ -177,6 +217,7 @@ class ORToolsSolver:
                 schedule_matrix={},
                 dummy_values={},
                 short_shift_hours={},
+                break_periods={},
                 solve_time=solve_time,
             )
 
@@ -187,6 +228,7 @@ class ORToolsSolver:
                 schedule_matrix={},
                 dummy_values={},
                 short_shift_hours={},
+                break_periods={},
                 solve_time=solve_time,
             )
 
@@ -201,6 +243,16 @@ class ORToolsSolver:
             b: solver.Value(short_shift_hours[b]) / SCALE for b in employees
         }
 
+        # Extract break periods
+        break_periods = {}
+        for b in employees:
+            emp_breaks = []
+            for t_idx, t in enumerate(time_periods):
+                if solver.Value(on_break[(b, t)]) == 1:
+                    emp_breaks.append(t_idx)
+            if emp_breaks:
+                break_periods[b] = emp_breaks
+
         result_status = (
             SolverStatus.OPTIMAL if status == cp_model.OPTIMAL else SolverStatus.SUBOPTIMAL
         )
@@ -211,6 +263,7 @@ class ORToolsSolver:
             schedule_matrix=schedule_matrix,
             dummy_values=dummy_vals,
             short_shift_hours=short_shift_vals,
+            break_periods=break_periods,
             solve_time=solve_time,
         )
 

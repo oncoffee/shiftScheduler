@@ -4,6 +4,7 @@ export interface ShiftPeriod {
   end_time: string;
   scheduled: boolean;
   is_locked?: boolean;
+  is_break?: boolean;
 }
 
 export interface EmployeeDaySchedule {
@@ -35,6 +36,15 @@ export interface DayScheduleSummary {
   dummy_worker_cost: number;
 }
 
+export interface ComplianceViolation {
+  rule_type: string;  // "MINOR_CURFEW", "REST_VIOLATION", "OVERTIME", etc.
+  severity: string;   // "error", "warning"
+  employee_name: string;
+  date: string | null;
+  message: string;
+  details: Record<string, unknown> | null;
+}
+
 export interface WeeklyScheduleResult {
   start_date: string;  // ISO date string: "2025-01-20"
   end_date: string;    // ISO date string: "2025-01-26"
@@ -49,6 +59,7 @@ export interface WeeklyScheduleResult {
   has_warnings: boolean;
   is_edited?: boolean;
   last_edited_at?: string | null;
+  compliance_violations: ComplianceViolation[];
 }
 
 export type DragOperationType = "move" | "resize-start" | "resize-end" | "reassign";

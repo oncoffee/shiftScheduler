@@ -10,6 +10,9 @@ from .models import (
     Assignment,
     ShiftPeriodEmbed,
     UnfilledPeriodEmbed,
+    ComplianceRuleDoc,
+    ComplianceViolation,
+    ComplianceRuleSuggestion,
 )
 from .sync import sync_all_from_sheets
 
@@ -26,5 +29,8 @@ __all__ = [
     "Assignment",
     "ShiftPeriodEmbed",
     "UnfilledPeriodEmbed",
+    "ComplianceRuleDoc",
+    "ComplianceViolation",
+    "ComplianceRuleSuggestion",
     "sync_all_from_sheets",
 ]

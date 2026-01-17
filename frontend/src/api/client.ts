@@ -150,6 +150,113 @@ export const api = {
       params.set("solver_type", config.solver_type);
     return fetchApi<Config>(`/config?${params.toString()}`, { method: "POST" });
   },
+
+  // Compliance API
+  getUSStates: () => fetchApi<USState[]>("/compliance/states"),
+
+  getComplianceRules: () => fetchApi<ComplianceRule[]>("/compliance/rules"),
+
+  getComplianceRule: (jurisdiction: string) =>
+    fetchApi<ComplianceRule>(`/compliance/rules/${jurisdiction}`),
+
+  createOrUpdateComplianceRule: (jurisdiction: string, rule: Partial<ComplianceRule>) =>
+    fetchApi<{ success: boolean; jurisdiction: string }>(`/compliance/rules/${jurisdiction}`, {
+      method: "POST",
+      body: JSON.stringify(rule),
+    }),
+
+  deleteComplianceRule: (jurisdiction: string) =>
+    fetchApi<{ success: boolean }>(`/compliance/rules/${jurisdiction}`, {
+      method: "DELETE",
+    }),
+
+  researchStateCompliance: (state: string) =>
+    fetchApi<ComplianceRuleSuggestion>(`/compliance/ai/research/${state}`, {
+      method: "POST",
+    }),
+
+  approveAISuggestion: (
+    editedSuggestion: ComplianceRuleSuggestion,
+    originalSuggestion?: ComplianceRuleSuggestion
+  ) =>
+    fetchApi<{ success: boolean; jurisdiction: string; edits_made: number; audit_created: boolean }>("/compliance/ai/approve", {
+      method: "POST",
+      body: JSON.stringify({
+        suggestion_id: editedSuggestion.suggestion_id,
+        jurisdiction: editedSuggestion.jurisdiction,
+        min_rest_hours: editedSuggestion.min_rest_hours,
+        minor_curfew_end: editedSuggestion.minor_curfew_end,
+        minor_earliest_start: editedSuggestion.minor_earliest_start,
+        minor_max_daily_hours: editedSuggestion.minor_max_daily_hours,
+        minor_max_weekly_hours: editedSuggestion.minor_max_weekly_hours,
+        minor_age_threshold: editedSuggestion.minor_age_threshold,
+        daily_overtime_threshold: editedSuggestion.daily_overtime_threshold,
+        weekly_overtime_threshold: editedSuggestion.weekly_overtime_threshold,
+        meal_break_after_hours: editedSuggestion.meal_break_after_hours,
+        meal_break_duration_minutes: editedSuggestion.meal_break_duration_minutes,
+        rest_break_interval_hours: editedSuggestion.rest_break_interval_hours,
+        rest_break_duration_minutes: editedSuggestion.rest_break_duration_minutes,
+        advance_notice_days: editedSuggestion.advance_notice_days,
+        sources: editedSuggestion.sources,
+        notes: editedSuggestion.notes,
+        // Original suggestion for audit trail
+        original_suggestion: originalSuggestion ? {
+          min_rest_hours: originalSuggestion.min_rest_hours,
+          minor_curfew_end: originalSuggestion.minor_curfew_end,
+          minor_earliest_start: originalSuggestion.minor_earliest_start,
+          minor_max_daily_hours: originalSuggestion.minor_max_daily_hours,
+          minor_max_weekly_hours: originalSuggestion.minor_max_weekly_hours,
+          minor_age_threshold: originalSuggestion.minor_age_threshold,
+          daily_overtime_threshold: originalSuggestion.daily_overtime_threshold,
+          weekly_overtime_threshold: originalSuggestion.weekly_overtime_threshold,
+          meal_break_after_hours: originalSuggestion.meal_break_after_hours,
+          meal_break_duration_minutes: originalSuggestion.meal_break_duration_minutes,
+          rest_break_interval_hours: originalSuggestion.rest_break_interval_hours,
+          rest_break_duration_minutes: originalSuggestion.rest_break_duration_minutes,
+          advance_notice_days: originalSuggestion.advance_notice_days,
+          sources: originalSuggestion.sources,
+          notes: originalSuggestion.notes,
+          model_used: originalSuggestion.model_used,
+          confidence_level: originalSuggestion.confidence_level,
+          validation_warnings: originalSuggestion.validation_warnings,
+          disclaimer: originalSuggestion.disclaimer,
+        } : undefined,
+      }),
+    }),
+
+  validateScheduleCompliance: (scheduleId: string) =>
+    fetchApi<ComplianceValidationResult>(`/compliance/validate/${scheduleId}`, {
+      method: "POST",
+    }),
+
+  // Audit trail endpoints
+  getComplianceAuditHistory: (jurisdiction?: string, limit = 50, skip = 0) =>
+    fetchApi<ComplianceAuditRecord[]>(
+      `/compliance/audit?${jurisdiction ? `jurisdiction=${jurisdiction}&` : ""}limit=${limit}&skip=${skip}`
+    ),
+
+  getComplianceAuditDetail: (auditId: string) =>
+    fetchApi<ComplianceAuditRecord>(`/compliance/audit/${auditId}`),
+
+  getComplianceConfig: () => fetchApi<ComplianceConfig>("/compliance/config"),
+
+  updateComplianceConfig: (config: Partial<ComplianceConfig>) =>
+    fetchApi<ComplianceConfig>("/compliance/config", {
+      method: "POST",
+      body: JSON.stringify(config),
+    }),
+
+  updateEmployeeCompliance: (employeeName: string, data: { date_of_birth?: string; is_minor?: boolean }) =>
+    fetchApi<{ success: boolean; employee_name: string }>(`/employees/${encodeURIComponent(employeeName)}/compliance`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  updateStoreJurisdiction: (storeName: string, jurisdiction: string) =>
+    fetchApi<{ success: boolean; store_name: string; jurisdiction: string }>(
+      `/stores/${encodeURIComponent(storeName)}/jurisdiction?jurisdiction=${jurisdiction}`,
+      { method: "PUT" }
+    ),
 };
 
 export interface AvailabilitySlot {
@@ -165,6 +272,8 @@ export interface Employee {
   minimum_hours: number;
   maximum_hours: number;
   availability?: AvailabilitySlot[];
+  date_of_birth?: string | null;  // ISO date string
+  is_minor?: boolean;
 }
 
 export interface EmployeeSchedule {
@@ -226,4 +335,111 @@ export interface ScheduleHistoryItem {
   status: string;
   has_warnings: boolean;
   is_current: boolean;
+}
+
+// Compliance Types
+export interface USState {
+  code: string;
+  name: string;
+}
+
+export interface ComplianceRule {
+  jurisdiction: string;
+  min_rest_hours: number;
+  minor_max_daily_hours: number;
+  minor_max_weekly_hours: number;
+  minor_curfew_end: string;
+  minor_earliest_start: string;
+  minor_age_threshold: number;
+  daily_overtime_threshold: number | null;
+  weekly_overtime_threshold: number;
+  meal_break_after_hours: number;
+  meal_break_duration_minutes: number;
+  rest_break_interval_hours: number;
+  rest_break_duration_minutes: number;
+  advance_notice_days: number;
+  source: string | null;
+  ai_sources: string[];
+  notes: string | null;
+}
+
+export interface ComplianceRuleSuggestion {
+  suggestion_id: string;
+  jurisdiction: string;
+  state_name: string;
+  min_rest_hours: number | null;
+  minor_curfew_end: string | null;
+  minor_earliest_start: string | null;
+  minor_max_daily_hours: number | null;
+  minor_max_weekly_hours: number | null;
+  minor_age_threshold: number;
+  daily_overtime_threshold: number | null;
+  weekly_overtime_threshold: number | null;
+  meal_break_after_hours: number | null;
+  meal_break_duration_minutes: number | null;
+  rest_break_interval_hours: number | null;
+  rest_break_duration_minutes: number | null;
+  advance_notice_days: number | null;
+  sources: string[];
+  notes: string | null;
+  model_used: string;
+  created_at: string;
+  // Guardrail metadata
+  validation_warnings: string[];
+  confidence_level: "low" | "medium" | "high";
+  requires_human_review: boolean;
+  disclaimer: string;
+}
+
+export interface ComplianceConfig {
+  compliance_mode: "off" | "warn" | "enforce";
+  enable_rest_between_shifts: boolean;
+  enable_minor_restrictions: boolean;
+  enable_overtime_tracking: boolean;
+  enable_break_compliance: boolean;
+  enable_predictive_scheduling: boolean;
+}
+
+export interface ComplianceViolation {
+  rule_type: string;
+  severity: "error" | "warning";
+  employee_name: string;
+  date: string | null;
+  message: string;
+  details: Record<string, unknown>;
+}
+
+export interface ComplianceValidationResult {
+  violations: ComplianceViolation[];
+  is_compliant: boolean;
+  error_count: number;
+  warning_count: number;
+  employee_weekly_hours: Record<string, number>;
+  overtime_hours: Record<string, number>;
+}
+
+export interface ComplianceRuleEdit {
+  field_name: string;
+  original_value: string | null;
+  edited_value: string | null;
+}
+
+export interface ComplianceAuditRecord {
+  id: string;
+  jurisdiction: string;
+  suggestion_id: string;
+  ai_model_used: string;
+  ai_confidence_level: string;
+  ai_sources: string[];
+  ai_validation_warnings: string[];
+  ai_disclaimer?: string;
+  ai_original: Record<string, unknown>;
+  human_edits: ComplianceRuleEdit[];
+  edit_count: number;
+  approved_values: Record<string, unknown>;
+  approved_at: string;
+  approved_by?: string;
+  approval_notes?: string;
+  ip_address?: string;
+  user_agent?: string;
 }

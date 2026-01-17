@@ -13,7 +13,7 @@ _client: AsyncIOMotorClient | None = None
 async def init_db():
     global _client
 
-    from .models import EmployeeDoc, StoreDoc, ConfigDoc, ScheduleRunDoc
+    from .models import EmployeeDoc, StoreDoc, ConfigDoc, ScheduleRunDoc, ComplianceRuleDoc, ComplianceAuditDoc
 
     _client = AsyncIOMotorClient(MONGODB_URL)
     database_name = MONGODB_URL.rsplit("/", 1)[-1].split("?")[0]
@@ -21,7 +21,7 @@ async def init_db():
 
     await init_beanie(
         database=database,
-        document_models=[EmployeeDoc, StoreDoc, ConfigDoc, ScheduleRunDoc],
+        document_models=[EmployeeDoc, StoreDoc, ConfigDoc, ScheduleRunDoc, ComplianceRuleDoc, ComplianceAuditDoc],
     )
 
     return database

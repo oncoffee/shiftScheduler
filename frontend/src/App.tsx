@@ -7,6 +7,7 @@ import { Schedule } from "@/pages/Schedule";
 import { History } from "@/pages/History";
 import { Logs } from "@/pages/Logs";
 import { Settings } from "@/pages/Settings";
+import { Compliance } from "@/pages/Compliance";
 
 function App() {
   return (
@@ -17,6 +18,7 @@ function App() {
           <Route path="employees" element={<Employees />} />
           <Route path="stores" element={<Stores />} />
           <Route path="schedule" element={<Schedule />} />
+          <Route path="compliance" element={<Compliance />} />
           <Route path="history" element={<History />} />
           <Route path="logs" element={<Logs />} />
           <Route path="settings" element={<Settings />} />

@@ -46,6 +46,9 @@ class GurobiSolver:
         dummy = m.addVars(time_periods, vtype=GRB.INTEGER, lb=0, name="dummy")
         short_shift_hours = m.addVars(employees, lb=0, name="short_shift")
 
+        on_break = m.addVars(employees, time_periods, vtype=GRB.BINARY, name="break")
+        needs_break = m.addVars(employees, vtype=GRB.BINARY, name="needs_break")
+
         # Objective: minimize labor cost + dummy worker penalties + short shift penalties
         m.setObjective(
             gp.quicksum(
@@ -68,10 +71,11 @@ class GurobiSolver:
             )
 
         # Constraint: minimum workers per period (skip first period)
+        # Workers on break don't count toward minimum staffing
         for t_idx in range(1, T):
             t = time_periods[t_idx]
             m.addConstr(
-                gp.quicksum(scheduled[b, t] for b in employees)
+                gp.quicksum(scheduled[b, t] - on_break[b, t] for b in employees)
                 + dummy[t]
                 >= problem.minimum_workers[t_idx],
                 name=f"min_workers_period_{t_idx}",
@@ -140,6 +144,48 @@ class GurobiSolver:
                         name=f"availability_constraint_for_{b}-{t}",
                     )
 
+        if config.meal_break_enabled:
+            meal_break_threshold_periods = int(config.meal_break_threshold_hours * 2)
+
+            for b in employees:
+                total_periods = gp.quicksum(scheduled[b, t] for t in time_periods)
+
+                m.addConstr(
+                    total_periods - meal_break_threshold_periods <= T * needs_break[b],
+                    name=f"needs_break_upper_{b}",
+                )
+                m.addConstr(
+                    total_periods - meal_break_threshold_periods >= 1 - T * (1 - needs_break[b]),
+                    name=f"needs_break_lower_{b}",
+                )
+
+                for t_idx, t in enumerate(time_periods):
+                    m.addConstr(
+                        on_break[b, t] <= scheduled[b, t],
+                        name=f"break_requires_scheduled_{b}_{t}",
+                    )
+
+                m.addConstr(
+                    gp.quicksum(on_break[b, t] for t in time_periods)
+                    >= config.meal_break_duration_periods * needs_break[b],
+                    name=f"min_break_periods_{b}",
+                )
+
+                for t_idx, t in enumerate(time_periods):
+                    if t_idx > 0 and t_idx < T - 1:
+                        t_prev = time_periods[t_idx - 1]
+                        t_next = time_periods[t_idx + 1]
+                        m.addConstr(
+                            on_break[b, t] <= scheduled[b, t_prev],
+                            name=f"break_not_first_{b}_{t}",
+                        )
+                        m.addConstr(
+                            on_break[b, t] <= scheduled[b, t_next],
+                            name=f"break_not_last_{b}_{t}",
+                        )
+                    else:
+                        m.addConstr(on_break[b, t] == 0, name=f"no_break_boundary_{b}_{t}")
+
         # Solve
         m.optimize()
 
@@ -153,6 +199,7 @@ class GurobiSolver:
                 schedule_matrix={},
                 dummy_values={},
                 short_shift_hours={},
+                break_periods={},
                 solve_time=solve_time,
             )
 
@@ -163,6 +210,7 @@ class GurobiSolver:
                 schedule_matrix={},
                 dummy_values={},
                 short_shift_hours={},
+                break_periods={},
                 solve_time=solve_time,
             )
 
@@ -175,6 +223,16 @@ class GurobiSolver:
         dummy_vals = {t: dummy[t].X for t in time_periods}
         short_shift_vals = {b: short_shift_hours[b].X for b in employees}
 
+        # Extract break periods
+        break_periods = {}
+        for b in employees:
+            emp_breaks = []
+            for t_idx, t in enumerate(time_periods):
+                if int(round(on_break[b, t].X)) == 1:
+                    emp_breaks.append(t_idx)
+            if emp_breaks:
+                break_periods[b] = emp_breaks
+
         status = SolverStatus.OPTIMAL if m.status == GRB.OPTIMAL else SolverStatus.SUBOPTIMAL
 
         return SolverResult(
@@ -183,6 +241,7 @@ class GurobiSolver:
             schedule_matrix=schedule_matrix,
             dummy_values=dummy_vals,
             short_shift_hours=short_shift_vals,
+            break_periods=break_periods,
             solve_time=solve_time,
         )
 

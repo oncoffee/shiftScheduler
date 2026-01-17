@@ -64,6 +64,11 @@ class PuLPSolver:
             "short_shift", employees, lowBound=0
         )
 
+        on_break = pulp.LpVariable.dicts(
+            "break", ((b, t) for b in employees for t in time_periods), cat=pulp.LpBinary
+        )
+        needs_break = pulp.LpVariable.dicts("needs_break", employees, cat=pulp.LpBinary)
+
         # Objective: minimize labor cost + dummy worker penalties + short shift penalties
         m += (
             pulp.lpSum(
@@ -85,10 +90,11 @@ class PuLPSolver:
             )
 
         # Constraint: minimum workers per period (skip first period)
+        # Workers on break don't count toward minimum staffing
         for t_idx in range(1, T):
             t = time_periods[t_idx]
             m += (
-                pulp.lpSum(scheduled[(b, t)] for b in employees)
+                pulp.lpSum(scheduled[(b, t)] - on_break[(b, t)] for b in employees)
                 + dummy[t]
                 >= problem.minimum_workers[t_idx],
                 f"min_workers_period_{t_idx}",
@@ -175,6 +181,48 @@ class PuLPSolver:
                         f"availability_constraint_for_{b}_{t}",
                     )
 
+        if config.meal_break_enabled:
+            meal_break_threshold_periods = int(config.meal_break_threshold_hours * 2)
+
+            for b in employees:
+                total_periods = pulp.lpSum(scheduled[(b, t)] for t in time_periods)
+
+                m += (
+                    total_periods - meal_break_threshold_periods <= T * needs_break[b],
+                    f"needs_break_upper_{b}",
+                )
+                m += (
+                    total_periods - meal_break_threshold_periods >= 1 - T * (1 - needs_break[b]),
+                    f"needs_break_lower_{b}",
+                )
+
+                for t_idx, t in enumerate(time_periods):
+                    m += (
+                        on_break[(b, t)] <= scheduled[(b, t)],
+                        f"break_requires_scheduled_{b}_{t}",
+                    )
+
+                m += (
+                    pulp.lpSum(on_break[(b, t)] for t in time_periods)
+                    >= config.meal_break_duration_periods * needs_break[b],
+                    f"min_break_periods_{b}",
+                )
+
+                for t_idx, t in enumerate(time_periods):
+                    if t_idx > 0 and t_idx < T - 1:
+                        t_prev = time_periods[t_idx - 1]
+                        t_next = time_periods[t_idx + 1]
+                        m += (
+                            on_break[(b, t)] <= scheduled[(b, t_prev)],
+                            f"break_not_first_{b}_{t}",
+                        )
+                        m += (
+                            on_break[(b, t)] <= scheduled[(b, t_next)],
+                            f"break_not_last_{b}_{t}",
+                        )
+                    else:
+                        m += (on_break[(b, t)] == 0, f"no_break_boundary_{b}_{t}")
+
         # Solve
         solver = pulp.PULP_CBC_CMD(msg=0)
         status = m.solve(solver)
@@ -189,6 +237,7 @@ class PuLPSolver:
                 schedule_matrix={},
                 dummy_values={},
                 short_shift_hours={},
+                break_periods={},
                 solve_time=solve_time,
             )
 
@@ -199,6 +248,7 @@ class PuLPSolver:
                 schedule_matrix={},
                 dummy_values={},
                 short_shift_hours={},
+                break_periods={},
                 solve_time=solve_time,
             )
 
@@ -212,12 +262,24 @@ class PuLPSolver:
         dummy_vals = {t: dummy[t].varValue or 0 for t in time_periods}
         short_shift_vals = {b: short_shift_hours[b].varValue or 0 for b in employees}
 
+        # Extract break periods
+        break_periods = {}
+        for b in employees:
+            emp_breaks = []
+            for t_idx, t in enumerate(time_periods):
+                val = on_break[(b, t)].varValue
+                if val is not None and int(round(val)) == 1:
+                    emp_breaks.append(t_idx)
+            if emp_breaks:
+                break_periods[b] = emp_breaks
+
         return SolverResult(
             status=SolverStatus.OPTIMAL,
             objective_value=pulp.value(m.objective),
             schedule_matrix=schedule_matrix,
             dummy_values=dummy_vals,
             short_shift_hours=short_shift_vals,
+            break_periods=break_periods,
             solve_time=solve_time,
         )
 

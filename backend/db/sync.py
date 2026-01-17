@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, date
+from dateutil import parser as date_parser
 import data_import
 from .models import (
     EmployeeDoc,
@@ -7,6 +8,24 @@ from .models import (
     AvailabilitySlot,
     StoreHours,
 )
+
+
+def parse_date_of_birth(dob_str: str) -> date | None:
+    """
+    Parse date of birth from various formats.
+    Supports: YYYY-MM-DD, MM/DD/YYYY, DD/MM/YYYY, "May 15, 1995", etc.
+    """
+    if not dob_str or not str(dob_str).strip():
+        return None
+
+    dob_str = str(dob_str).strip()
+
+    try:
+        # Use dateutil parser for flexible parsing
+        parsed = date_parser.parse(dob_str, dayfirst=False)
+        return parsed.date()
+    except (ValueError, TypeError):
+        return None
 
 
 def parse_availability(availability_str: str) -> tuple[str, str] | None:
@@ -83,6 +102,10 @@ async def sync_employees() -> int:
 
         disabled = bool(row.get("Disabled", False))
 
+        # Parse date of birth from Google Sheets
+        dob_str = row.get("Date of Birth", "") or row.get("DOB", "") or row.get("Birth Date", "")
+        date_of_birth = parse_date_of_birth(dob_str)
+
         existing = await EmployeeDoc.find_one(EmployeeDoc.employee_name == emp_name)
 
         employee_data = {
@@ -93,6 +116,7 @@ async def sync_employees() -> int:
             "maximum_hours": int(row.get("Maximum hours", 11)),
             "disabled": disabled,
             "availability": availability_map.get(emp_name, []),
+            "date_of_birth": date_of_birth,
             "updated_at": datetime.utcnow(),
         }
 

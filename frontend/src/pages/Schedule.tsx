@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
-import { Play, Loader2, CheckCircle, XCircle, RefreshCw, Edit3, Plus, Calendar } from "lucide-react";
+import { Play, Loader2, CheckCircle, XCircle, RefreshCw, Edit3, Plus, Calendar, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import { api } from "@/api/client";
 import type { Employee } from "@/api/client";
 import { WeeklyCalendar, EditModeToolbar, ShiftDetailModal, AddShiftModal } from "@/components/schedule";
@@ -11,7 +11,7 @@ import {
   ScheduleEditProvider,
   useScheduleEditContext,
 } from "@/contexts/ScheduleEditContext";
-import type { WeeklyScheduleResult, EmployeeDaySchedule } from "@/types/schedule";
+import type { WeeklyScheduleResult, EmployeeDaySchedule, ComplianceViolation } from "@/types/schedule";
 
 // Helper functions for date handling
 function getTomorrow(): Date {
@@ -65,6 +65,7 @@ function ScheduleContent() {
   }>({});
 
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showViolationsDetail, setShowViolationsDetail] = useState(false);
   const tomorrow = getTomorrow();
   const minDate = formatDateISO(tomorrow);
   const [selectedStartDate, setSelectedStartDate] = useState(() => formatDateISO(tomorrow));
@@ -363,6 +364,57 @@ function ScheduleContent() {
                   </div>
                 )}
               </div>
+
+              {/* Compliance Violations Banner */}
+              {scheduleResult.compliance_violations && scheduleResult.compliance_violations.length > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50">
+                  <button
+                    onClick={() => setShowViolationsDetail(!showViolationsDetail)}
+                    className="w-full px-4 py-3 flex items-center justify-between text-left"
+                  >
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className="h-5 w-5 text-amber-600" />
+                      <span className="font-medium text-amber-800">
+                        {scheduleResult.compliance_violations.length} Compliance{" "}
+                        {scheduleResult.compliance_violations.length === 1 ? "Warning" : "Warnings"}
+                      </span>
+                    </div>
+                    {showViolationsDetail ? (
+                      <ChevronUp className="h-4 w-4 text-amber-600" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4 text-amber-600" />
+                    )}
+                  </button>
+                  {showViolationsDetail && (
+                    <div className="px-4 pb-4 space-y-2">
+                      {scheduleResult.compliance_violations.map((v: ComplianceViolation, idx: number) => (
+                        <div
+                          key={idx}
+                          className={`px-3 py-2 rounded-md text-sm ${
+                            v.severity === "error"
+                              ? "bg-red-100 text-red-800 border border-red-200"
+                              : "bg-amber-100 text-amber-800 border border-amber-200"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <span className="font-medium">{v.employee_name}</span>
+                              {v.date && <span className="text-xs ml-2">({v.date})</span>}
+                            </div>
+                            <Badge
+                              variant={v.severity === "error" ? "destructive" : "secondary"}
+                              className="text-xs"
+                            >
+                              {v.rule_type.replace(/_/g, " ")}
+                            </Badge>
+                          </div>
+                          <p className="mt-1 text-xs">{v.message}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <WeeklyCalendar
                 schedules={displaySchedules}

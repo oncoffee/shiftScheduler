@@ -76,20 +76,34 @@ function flattenAvailability(grouped: GroupedAvailability): AvailabilitySlot[] {
 interface EmployeeCardProps {
   employee: Employee;
   onAvailabilityChange: (availability: AvailabilitySlot[], shouldRefetch?: boolean) => Promise<void>;
+  onComplianceUpdate: (data: { date_of_birth?: string; is_minor?: boolean }) => Promise<void>;
 }
 
-function EmployeeCard({ employee, onAvailabilityChange }: EmployeeCardProps) {
+function EmployeeCard({ employee, onAvailabilityChange, onComplianceUpdate }: EmployeeCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [localAvailability, setLocalAvailability] = useState<GroupedAvailability>(() =>
     groupAvailabilityByDay(employee.availability)
   );
   const [saving, setSaving] = useState(false);
+  const [savingDob, setSavingDob] = useState(false);
+  const [localDob, setLocalDob] = useState(employee.date_of_birth || "");
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingAvailabilityRef = useRef<GroupedAvailability | null>(null);
 
   useEffect(() => {
     setLocalAvailability(groupAvailabilityByDay(employee.availability));
+    setLocalDob(employee.date_of_birth || "");
   }, [employee]);
+
+  const handleDobChange = async (newDob: string) => {
+    setLocalDob(newDob);
+    setSavingDob(true);
+    try {
+      await onComplianceUpdate({ date_of_birth: newDob || undefined });
+    } finally {
+      setSavingDob(false);
+    }
+  };
 
   const saveChanges = useCallback(async () => {
     if (!pendingAvailabilityRef.current) return;
@@ -165,11 +179,16 @@ function EmployeeCard({ employee, onAvailabilityChange }: EmployeeCardProps) {
         </div>
 
         <div className="flex items-center gap-3">
-          {saving && (
+          {(saving || savingDob) && (
             <div className="flex items-center gap-1.5 text-blue-600 text-sm">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
               <span>Saving...</span>
             </div>
+          )}
+          {employee.is_minor && (
+            <Badge variant="destructive" className="bg-amber-500 hover:bg-amber-600">
+              Minor
+            </Badge>
           )}
           <Badge variant="outline">
             {availableDaysCount} days | {totalAvailableHours.toFixed(1)}h available
@@ -180,6 +199,29 @@ function EmployeeCard({ employee, onAvailabilityChange }: EmployeeCardProps) {
 
       {expanded && (
         <CardContent className="pt-4 pb-6">
+          {/* Compliance Info */}
+          <div className="mb-6 pb-4 border-b">
+            <div className="flex items-center gap-6">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-gray-500">Date of Birth</label>
+                <input
+                  type="date"
+                  value={localDob}
+                  onChange={(e) => handleDobChange(e.target.value)}
+                  className="block w-40 px-2 py-1 text-sm border rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              {employee.is_minor && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-md">
+                  <span className="text-amber-700 text-sm">
+                    ⚠️ Minor employee - restricted hours apply (curfew, max daily/weekly hours)
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Availability Editor */}
           <div className="flex justify-around gap-2">
             {DAYS_OF_WEEK.map((day, idx) => (
               <MultiSlotTimeEditor
@@ -213,6 +255,14 @@ export function Employees() {
       if (shouldRefetch) {
         refetch();
       }
+    },
+    [refetch]
+  );
+
+  const handleComplianceUpdate = useCallback(
+    async (employeeName: string, data: { date_of_birth?: string; is_minor?: boolean }) => {
+      await api.updateEmployeeCompliance(employeeName, data);
+      refetch();
     },
     [refetch]
   );
@@ -257,6 +307,9 @@ export function Employees() {
               employee={employee}
               onAvailabilityChange={(availability, shouldRefetch) =>
                 handleAvailabilityChange(employee.employee_name, availability, shouldRefetch)
+              }
+              onComplianceUpdate={(data) =>
+                handleComplianceUpdate(employee.employee_name, data)
               }
             />
           ))}

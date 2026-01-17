@@ -8,6 +8,7 @@ class ShiftPeriod(BaseModel):
     end_time: str
     scheduled: bool
     is_locked: bool = False
+    is_break: bool = False
 
 
 class EmployeeDaySchedule(BaseModel):
@@ -39,6 +40,16 @@ class DayScheduleSummary(BaseModel):
     dummy_worker_cost: float = 0
 
 
+class ComplianceViolationSchema(BaseModel):
+    """Compliance violation detected in schedule."""
+    rule_type: str  # "MINOR_CURFEW", "REST_VIOLATION", "OVERTIME", etc.
+    severity: str  # "error", "warning"
+    employee_name: str
+    date: str | None = None
+    message: str
+    details: dict | None = None
+
+
 class WeeklyScheduleResult(BaseModel):
     start_date: str  # ISO date string: "2025-01-20"
     end_date: str    # ISO date string: "2025-01-26"
@@ -53,6 +64,7 @@ class WeeklyScheduleResult(BaseModel):
     has_warnings: bool = False
     is_edited: bool = False
     last_edited_at: str | None = None
+    compliance_violations: list[ComplianceViolationSchema] = []
 
 
 class ShiftUpdateRequest(BaseModel):
