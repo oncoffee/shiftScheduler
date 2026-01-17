@@ -66,6 +66,7 @@ function ScheduleContent() {
 
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showViolationsDetail, setShowViolationsDetail] = useState(false);
+  const [currentViewDate, setCurrentViewDate] = useState<string | null>(null);
   const tomorrow = getTomorrow();
   const minDate = formatDateISO(tomorrow);
   const [selectedStartDate, setSelectedStartDate] = useState(() => formatDateISO(tomorrow));
@@ -115,6 +116,13 @@ function ScheduleContent() {
   useEffect(() => {
     loadCachedSchedule();
   }, [loadCachedSchedule]);
+
+  const filteredViolations = useMemo(() => {
+    if (!scheduleResult?.compliance_violations || !currentViewDate) {
+      return scheduleResult?.compliance_violations || [];
+    }
+    return scheduleResult.compliance_violations.filter(v => v.date === currentViewDate);
+  }, [scheduleResult?.compliance_violations, currentViewDate]);
 
   async function runSolver(startDate?: string, endDate?: string) {
     setStatus("running");
@@ -365,8 +373,7 @@ function ScheduleContent() {
                 )}
               </div>
 
-              {/* Compliance Violations Banner */}
-              {scheduleResult.compliance_violations && scheduleResult.compliance_violations.length > 0 && (
+              {filteredViolations.length > 0 && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50">
                   <button
                     onClick={() => setShowViolationsDetail(!showViolationsDetail)}
@@ -375,8 +382,8 @@ function ScheduleContent() {
                     <div className="flex items-center gap-2">
                       <AlertTriangle className="h-5 w-5 text-amber-600" />
                       <span className="font-medium text-amber-800">
-                        {scheduleResult.compliance_violations.length} Compliance{" "}
-                        {scheduleResult.compliance_violations.length === 1 ? "Warning" : "Warnings"}
+                        {filteredViolations.length} Compliance{" "}
+                        {filteredViolations.length === 1 ? "Warning" : "Warnings"}
                       </span>
                     </div>
                     {showViolationsDetail ? (
@@ -387,7 +394,7 @@ function ScheduleContent() {
                   </button>
                   {showViolationsDetail && (
                     <div className="px-4 pb-4 space-y-2">
-                      {scheduleResult.compliance_violations.map((v: ComplianceViolation, idx: number) => (
+                      {filteredViolations.map((v: ComplianceViolation, idx: number) => (
                         <div
                           key={idx}
                           className={`px-3 py-2 rounded-md text-sm ${
@@ -397,10 +404,7 @@ function ScheduleContent() {
                           }`}
                         >
                           <div className="flex items-start justify-between">
-                            <div>
-                              <span className="font-medium">{v.employee_name}</span>
-                              {v.date && <span className="text-xs ml-2">({v.date})</span>}
-                            </div>
+                            <span className="font-medium">{v.employee_name}</span>
                             <Badge
                               variant={v.severity === "error" ? "destructive" : "secondary"}
                               className="text-xs"
@@ -426,6 +430,7 @@ function ScheduleContent() {
                 onShiftClick={handleShiftClick}
                 onEmptyClick={handleEmptyClick}
                 employeeAvailability={employees}
+                onDateChange={setCurrentViewDate}
               />
 
               <ShiftDetailModal

@@ -48,7 +48,7 @@ const HOUR_SLOTS = Array.from({ length: 17 }, (_, i) => {
 interface WeeklyCalendarProps {
   schedules: EmployeeDaySchedule[];
   dailySummaries: DayScheduleSummary[];
-  startDate?: string;  // ISO date string: "2025-01-20"
+  startDate?: string;
   isEditMode?: boolean;
   onShiftUpdate?: (
     employeeName: string,
@@ -63,6 +63,7 @@ interface WeeklyCalendarProps {
   onShiftClick?: (shift: EmployeeDaySchedule) => void;
   onEmptyClick?: (employeeName: string, dayOfWeek: string, startTime?: string, endTime?: string) => void;
   employeeAvailability?: Employee[];
+  onDateChange?: (date: string | null) => void;
 }
 
 // Helper to get the Monday of the week containing a given date
@@ -433,6 +434,7 @@ export function WeeklyCalendar({
   onShiftClick,
   onEmptyClick,
   employeeAvailability,
+  onDateChange,
 }: WeeklyCalendarProps) {
   const [selectedDayIndex, setSelectedDayIndex] = useState(getTodayDayIndex);
   const [weekOffset, setWeekOffset] = useState(0);
@@ -488,6 +490,10 @@ export function WeeklyCalendar({
     const date = dayDates.get(selectedDay);
     return date ? formatDateToISO(date) : null;
   }, [dayDates, selectedDay]);
+
+  useEffect(() => {
+    onDateChange?.(selectedDate);
+  }, [selectedDate, onDateChange]);
 
   const isViewingToday = selectedDate === formatDateToISO(new Date());
   const isViewingPastDate = useMemo(() => {
