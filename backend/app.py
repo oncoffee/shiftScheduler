@@ -125,7 +125,6 @@ def _validate_object_id(id_str: str) -> ObjectId:
 
 load_dotenv()
 
-SOLVER_PASS_KEY = os.getenv("SOLVER_PASS_KEY", "changeme")
 
 
 @asynccontextmanager
@@ -161,7 +160,7 @@ app = FastAPI(title="shiftScheduler", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1273,8 +1272,8 @@ async def get_schedule_by_id(
 
     try:
         run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
-    except Exception:
-        raise HTTPException(status_code=404, detail="Schedule not found")
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid schedule ID format")
 
     if not run:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -2238,8 +2237,8 @@ async def validate_change(
 
     try:
         schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
-    except Exception:
-        raise HTTPException(status_code=404, detail="Schedule not found")
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid schedule ID format")
 
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -2279,8 +2278,8 @@ async def update_assignment(
 
     try:
         schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
-    except Exception:
-        raise HTTPException(status_code=404, detail="Schedule not found")
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid schedule ID format")
 
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -2508,8 +2507,8 @@ async def batch_update_assignments(
 
     try:
         schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
-    except Exception:
-        raise HTTPException(status_code=404, detail="Schedule not found")
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid schedule ID format")
 
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -2557,8 +2556,8 @@ async def toggle_shift_lock(
 
     try:
         schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
-    except Exception:
-        raise HTTPException(status_code=404, detail="Schedule not found")
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid schedule ID format")
 
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -2653,8 +2652,8 @@ async def delete_shift(
 
     try:
         schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
-    except Exception:
-        raise HTTPException(status_code=404, detail="Schedule not found")
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid schedule ID format")
 
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -3320,8 +3319,8 @@ async def get_compliance_audit_detail(
 
     try:
         audit = await ComplianceAuditDoc.get(PydanticObjectId(audit_id))
-    except Exception:
-        raise HTTPException(status_code=404, detail="Audit record not found")
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid audit ID format")
 
     if not audit:
         raise HTTPException(status_code=404, detail="Audit record not found")
@@ -3364,8 +3363,8 @@ async def validate_schedule_compliance_endpoint(
 
     try:
         schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
-    except Exception:
-        raise HTTPException(status_code=404, detail="Schedule not found")
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid schedule ID format")
 
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")

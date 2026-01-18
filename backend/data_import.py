@@ -1,6 +1,11 @@
 import os
 import gspread
 from datetime import datetime
+
+try:
+    from gspread.exceptions import WorksheetNotFound
+except (ImportError, AttributeError):
+    WorksheetNotFound = Exception
 from pydantic import BaseModel
 from dateutil import parser
 from pprint import pprint
@@ -97,8 +102,7 @@ def load_data():
             min_shift_hours=float(config_dict.get("min_shift_hours", 3)),
             max_daily_hours=float(config_dict.get("max_daily_hours", 11)),
         )
-    except Exception:
-        # If Config tab doesn't exist or has issues, use defaults
+    except (WorksheetNotFound, KeyError, ValueError):
         config = Config()
 
     rates = {}

@@ -337,12 +337,10 @@ class TestLockedShiftsPreservation:
         mock_db["DailySummaryDoc"].find = MagicMock(return_value=_create_find_chain_mock([]))
 
         with patch("app.main") as mock_main, patch(
-            "app.SOLVER_PASS_KEY", "testkey"
-        ), patch("app._persist_schedule_result", new_callable=AsyncMock), patch(
-            "app._run_compliance_validation", new_callable=AsyncMock
-        ):
+            "app._persist_schedule_result", new_callable=AsyncMock
+        ), patch("app._run_compliance_validation", new_callable=AsyncMock):
             mock_main.return_value = mock_result
-            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
+            response = client.get("/solver/run?start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 200
             data = response.json()
@@ -363,11 +361,11 @@ class TestSolverErrorHandling:
     def test_solver_returns_400_on_infeasible_model(self, client, mock_db):
         mock_db["ScheduleRunDoc"].find_one = AsyncMock(return_value=None)
 
-        with patch("app.main") as mock_main, patch("app.SOLVER_PASS_KEY", "testkey"):
+        with patch("app.main") as mock_main:
             mock_main.side_effect = ValueError(
                 "Schedule is infeasible for Monday. Check locked shifts and availability."
             )
-            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
+            response = client.get("/solver/run?start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 400
             assert "infeasible" in response.json()["detail"].lower()
@@ -375,9 +373,9 @@ class TestSolverErrorHandling:
     def test_solver_returns_400_with_descriptive_message(self, client, mock_db):
         mock_db["ScheduleRunDoc"].find_one = AsyncMock(return_value=None)
 
-        with patch("app.main") as mock_main, patch("app.SOLVER_PASS_KEY", "testkey"):
+        with patch("app.main") as mock_main:
             mock_main.side_effect = ValueError("Solver failed for Tuesday with status 3")
-            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
+            response = client.get("/solver/run?start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 400
             assert "Tuesday" in response.json()["detail"]
@@ -443,12 +441,10 @@ class TestLockedShiftsExtraction:
         )
 
         with patch("app.main") as mock_main, patch(
-            "app.SOLVER_PASS_KEY", "testkey"
-        ), patch("app._persist_schedule_result", new_callable=AsyncMock), patch(
-            "app._run_compliance_validation", new_callable=AsyncMock
-        ):
+            "app._persist_schedule_result", new_callable=AsyncMock
+        ), patch("app._run_compliance_validation", new_callable=AsyncMock):
             mock_main.return_value = mock_result
-            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
+            response = client.get("/solver/run?start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 200
             mock_main.assert_called_once()
@@ -496,12 +492,10 @@ class TestLockedShiftsExtraction:
         )
 
         with patch("app.main") as mock_main, patch(
-            "app.SOLVER_PASS_KEY", "testkey"
-        ), patch("app._persist_schedule_result", new_callable=AsyncMock), patch(
-            "app._run_compliance_validation", new_callable=AsyncMock
-        ):
+            "app._persist_schedule_result", new_callable=AsyncMock
+        ), patch("app._run_compliance_validation", new_callable=AsyncMock):
             mock_main.return_value = mock_result
-            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
+            response = client.get("/solver/run?start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 200
             call_args = mock_main.call_args
@@ -544,12 +538,10 @@ class TestLockedShiftsExtraction:
         )
 
         with patch("app.main") as mock_main, patch(
-            "app.SOLVER_PASS_KEY", "testkey"
-        ), patch("app._persist_schedule_result", new_callable=AsyncMock), patch(
-            "app._run_compliance_validation", new_callable=AsyncMock
-        ):
+            "app._persist_schedule_result", new_callable=AsyncMock
+        ), patch("app._run_compliance_validation", new_callable=AsyncMock):
             mock_main.return_value = mock_result
-            response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
+            response = client.get("/solver/run?start_date=2024-01-15&end_date=2024-01-21")
 
             assert response.status_code == 200
             call_args = mock_main.call_args

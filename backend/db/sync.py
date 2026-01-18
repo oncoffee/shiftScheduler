@@ -65,7 +65,7 @@ def parse_availability(availability_str: str) -> tuple[str, str] | None:
         start = convert_time(parts[0])
         end = convert_time(parts[1])
         return start, end
-    except Exception:
+    except (ValueError, IndexError, AttributeError):
         return None
 
 

@@ -217,8 +217,8 @@ class TestGetScheduleCurrent:
 
         response = client.get("/schedule/current")
 
-        # Either 200 (null) or 404 (not found) is acceptable
-        assert response.status_code in [200, 404]
+        # Either 200 (null), 400 (validation), or 404 (not found) is acceptable
+        assert response.status_code in [200, 400, 404]
 
 
 class TestUpdateAssignmentDirect:
@@ -300,11 +300,25 @@ class TestLegacyEndpoints:
     """Tests for legacy schedule endpoints that interact with separate collections."""
 
     def test_toggle_lock_requires_valid_schedule_id(self, client, mock_db):
+        """Should return 400 for invalid schedule ID format."""
+        response = client.patch(
+            "/schedule/nonexistent123/lock",
+            json={
+                "employee_name": "Emma",
+                "date": "2026-01-20",
+                "is_locked": True
+            }
+        )
+
+        assert response.status_code == 400
+        assert "Invalid" in response.json()["detail"]
+
+    def test_toggle_lock_returns_404_when_not_found(self, client, mock_db):
         """Should return 404 when schedule not found."""
         mock_db["ScheduleRunDoc"].get = AsyncMock(return_value=None)
 
         response = client.patch(
-            "/schedule/nonexistent123/lock",
+            "/schedule/507f1f77bcf86cd799439011/lock",
             json={
                 "employee_name": "Emma",
                 "date": "2026-01-20",

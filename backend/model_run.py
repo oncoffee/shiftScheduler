@@ -218,19 +218,24 @@ def convert_schedule_to_structured(
     return employee_schedules, summary
 
 
+_logging_configured = False
+
+
 def setup_logging():
-    open('myapp.log', 'w').close()
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s %(levelname)-8s %(message)s',
-        datefmt='%m-%d %H:%M',
-        filename='myapp.log',
-        filemode='w'
-    )
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    console.setFormatter(logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s'))
-    logging.getLogger('').addHandler(console)
+    global _logging_configured
+    if _logging_configured:
+        return
+
+    logger = logging.getLogger()
+    if not logger.handlers:
+        logger.setLevel(logging.DEBUG)
+
+        console = logging.StreamHandler()
+        console.setLevel(logging.INFO)
+        console.setFormatter(logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s'))
+        logger.addHandler(console)
+
+    _logging_configured = True
 
 
 def time_to_minutes(time_str: str) -> int:
