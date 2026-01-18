@@ -10,7 +10,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import type { EmployeeDaySchedule, DayScheduleSummary } from "@/types/schedule";
+import type { EmployeeDaySchedule, DayScheduleSummary, ComplianceViolation } from "@/types/schedule";
 import type { Employee } from "@/api/client";
 import { DraggableShift, ShiftPreview } from "./DraggableShift";
 import { useScheduleEdit } from "@/hooks/useScheduleEdit";
@@ -65,6 +65,7 @@ interface WeeklyCalendarProps {
   onEmptyClick?: (employeeName: string, dayOfWeek: string, startTime?: string, endTime?: string) => void;
   employeeAvailability?: Employee[];
   onDateChange?: (date: string | null) => void;
+  complianceViolations?: ComplianceViolation[];
 }
 
 // Helper to get the Monday of the week containing a given date
@@ -436,6 +437,7 @@ export function WeeklyCalendar({
   onEmptyClick,
   employeeAvailability,
   onDateChange,
+  complianceViolations = [],
 }: WeeklyCalendarProps) {
   const [selectedDayIndex, setSelectedDayIndex] = useState(getTodayDayIndex);
   const [weekOffset, setWeekOffset] = useState(0);
@@ -575,6 +577,15 @@ export function WeeklyCalendar({
 
     return merged;
   }, [daySummary]);
+
+  const violationsForDate = useMemo(() => {
+    if (!selectedDate || complianceViolations.length === 0) return [];
+    return complianceViolations.filter(v => v.date === selectedDate);
+  }, [complianceViolations, selectedDate]);
+
+  const getViolationsForEmployee = useCallback((employeeName: string) => {
+    return violationsForDate.filter(v => v.employee_name === employeeName);
+  }, [violationsForDate]);
 
   const totalColumns = employees.length + (hasUnfilled ? 1 : 0);
 
@@ -903,6 +914,7 @@ export function WeeklyCalendar({
                         }
                         onClick={onShiftClick}
                         formatTime={formatTime}
+                        violations={getViolationsForEmployee(emp)}
                       />
                     );
                   })}

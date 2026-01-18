@@ -436,6 +436,7 @@ function ScheduleContent() {
                 onEmptyClick={handleEmptyClick}
                 employeeAvailability={employees}
                 onDateChange={setCurrentViewDate}
+                complianceViolations={scheduleResult?.compliance_violations}
               />
 
               <ShiftDetailModal
