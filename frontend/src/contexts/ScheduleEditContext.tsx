@@ -33,7 +33,8 @@ interface ScheduleEditContextValue {
     newEnd: string,
     originalStart: string,
     originalEnd: string,
-    newEmployeeName?: string
+    newEmployeeName?: string,
+    date?: string | null
   ) => void;
   addNewShift: (
     employeeName: string,
@@ -177,17 +178,26 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
       newEnd: string,
       originalStart: string,
       originalEnd: string,
-      newEmployeeName?: string
+      newEmployeeName?: string,
+      date?: string | null
     ) => {
       saveSnapshot();
+
+      const matchesTarget = (schedule: EmployeeDaySchedule, targetEmployee: string) => {
+        if (schedule.employee_name !== targetEmployee) return false;
+        if (date && schedule.date) {
+          return schedule.date === date;
+        }
+        return schedule.day_of_week === dayOfWeek;
+      };
 
       setLocalSchedules((prev) => {
         if (newEmployeeName && newEmployeeName !== employeeName) {
           return prev.map((schedule) => {
-            if (schedule.employee_name === employeeName && schedule.day_of_week === dayOfWeek) {
+            if (matchesTarget(schedule, employeeName)) {
               return clearShiftFromSchedule(schedule, originalStart, originalEnd);
             }
-            if (schedule.employee_name === newEmployeeName && schedule.day_of_week === dayOfWeek) {
+            if (matchesTarget(schedule, newEmployeeName)) {
               return addShiftToSchedule(schedule, newStart, newEnd);
             }
             return schedule;
@@ -195,7 +205,7 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
         }
 
         return prev.map((schedule) => {
-          if (schedule.employee_name === employeeName && schedule.day_of_week === dayOfWeek) {
+          if (matchesTarget(schedule, employeeName)) {
             return addShiftToSchedule(
               clearShiftFromSchedule(schedule, originalStart, originalEnd),
               newStart,
@@ -209,11 +219,12 @@ export function ScheduleEditProvider({ children }: ScheduleEditProviderProps) {
       setPendingChanges((prev) => [
         ...prev.filter(
           (c) =>
-            !(c.employee_name === employeeName && c.day_of_week === dayOfWeek)
+            !(c.employee_name === employeeName && c.day_of_week === dayOfWeek && c.date === date)
         ),
         {
           employee_name: employeeName,
           day_of_week: dayOfWeek,
+          date: date,
           new_shift_start: newStart,
           new_shift_end: newEnd,
           new_employee_name: newEmployeeName,

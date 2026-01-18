@@ -814,6 +814,7 @@ async def validate_change(schedule_id: str, request: ValidateChangeRequest):
             EDS(
                 employee_name=assignment.employee_name,
                 day_of_week=assignment.day_of_week,
+                date=assignment.date,
                 periods=periods,
                 total_hours=assignment.total_hours,
                 shift_start=assignment.shift_start,
@@ -866,6 +867,7 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
             EDS(
                 employee_name=assignment.employee_name,
                 day_of_week=assignment.day_of_week,
+                date=assignment.date,
                 periods=periods,
                 total_hours=assignment.total_hours,
                 shift_start=assignment.shift_start,
@@ -889,6 +891,7 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
         current_summaries.append(
             DSS(
                 day_of_week=summary.day_of_week,
+                date=getattr(summary, 'date', None),
                 total_cost=summary.total_cost,
                 employees_scheduled=summary.employees_scheduled,
                 total_labor_hours=summary.total_labor_hours,
@@ -918,8 +921,15 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
     updated_schedules = []
     schedule_found = False
 
+    def matches_request(schedule, employee_name, day_of_week, date=None):
+        if schedule.employee_name != employee_name:
+            return False
+        if date and schedule.date:
+            return schedule.date == date
+        return schedule.day_of_week == day_of_week
+
     for schedule in current_schedules:
-        if schedule.employee_name == request.employee_name and schedule.day_of_week == request.day_of_week:
+        if matches_request(schedule, request.employee_name, request.day_of_week, request.date):
             schedule_found = True
 
             if request.new_employee_name and request.new_employee_name != request.employee_name:
@@ -930,7 +940,7 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
                 # Find or create target employee's schedule for that day
                 target_found = False
                 for target_schedule in current_schedules:
-                    if target_schedule.employee_name == request.new_employee_name and target_schedule.day_of_week == request.day_of_week:
+                    if matches_request(target_schedule, request.new_employee_name, request.day_of_week, request.date):
                         target_found = True
                         # Skip here, will update in main loop
                         break
@@ -950,6 +960,7 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
                     new_schedule = EDS(
                         employee_name=request.new_employee_name,
                         day_of_week=request.day_of_week,
+                        date=request.date or schedule.date,
                         periods=new_periods,
                         total_hours=0,
                         shift_start=None,
@@ -962,7 +973,7 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
                 # Same employee, just update times
                 updated_schedule = update_assignment_times(schedule, request.new_shift_start, request.new_shift_end, config)
                 updated_schedules.append(updated_schedule)
-        elif request.new_employee_name and schedule.employee_name == request.new_employee_name and schedule.day_of_week == request.day_of_week:
+        elif request.new_employee_name and matches_request(schedule, request.new_employee_name, request.day_of_week, request.date):
             # This is the target employee for reassignment
             updated_schedule = update_assignment_times(schedule, request.new_shift_start, request.new_shift_end, config)
             updated_schedules.append(updated_schedule)
@@ -994,6 +1005,7 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
             Assignment(
                 employee_name=schedule.employee_name,
                 day_of_week=schedule.day_of_week,
+                date=schedule.date,
                 total_hours=schedule.total_hours,
                 shift_start=schedule.shift_start,
                 shift_end=schedule.shift_end,
@@ -1016,6 +1028,7 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
         updated_daily_summaries.append(
             DailySummary(
                 day_of_week=summary.day_of_week,
+                date=summary.date,
                 total_cost=summary.total_cost,
                 employees_scheduled=summary.employees_scheduled,
                 total_labor_hours=summary.total_labor_hours,
@@ -1275,6 +1288,7 @@ async def delete_shift(schedule_id: str, request: DeleteShiftRequest):
         updated_daily_summaries.append(
             DailySummary(
                 day_of_week=summary.day_of_week,
+                date=summary.date,
                 total_cost=summary.total_cost,
                 employees_scheduled=summary.employees_scheduled,
                 total_labor_hours=summary.total_labor_hours,

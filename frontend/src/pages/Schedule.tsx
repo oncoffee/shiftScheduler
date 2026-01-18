@@ -119,9 +119,13 @@ function ScheduleContent() {
 
   const filteredViolations = useMemo(() => {
     if (!scheduleResult?.compliance_violations || !currentViewDate) {
-      return scheduleResult?.compliance_violations || [];
+      return (scheduleResult?.compliance_violations || []).filter(
+        v => v.rule_type !== 'MEAL_BREAK_REQUIRED'
+      );
     }
-    return scheduleResult.compliance_violations.filter(v => v.date === currentViewDate);
+    return scheduleResult.compliance_violations.filter(
+      v => v.date === currentViewDate && v.rule_type !== 'MEAL_BREAK_REQUIRED'
+    );
   }, [scheduleResult?.compliance_violations, currentViewDate]);
 
   async function runSolver(startDate?: string, endDate?: string) {
@@ -166,9 +170,10 @@ function ScheduleContent() {
       newEnd: string,
       originalStart: string,
       originalEnd: string,
-      newEmployeeName?: string
+      newEmployeeName?: string,
+      date?: string | null
     ) => {
-      updateLocalShift(employeeName, dayOfWeek, newStart, newEnd, originalStart, originalEnd, newEmployeeName);
+      updateLocalShift(employeeName, dayOfWeek, newStart, newEnd, originalStart, originalEnd, newEmployeeName, date);
     },
     [updateLocalShift]
   );

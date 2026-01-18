@@ -164,6 +164,7 @@ async def recalculate_schedule_costs(
 
         updated_summaries.append(DayScheduleSummary(
             day_of_week=day,
+            date=summary.date,
             total_cost=total_cost,
             employees_scheduled=employees_scheduled,
             total_labor_hours=total_labor_hours,
@@ -301,6 +302,7 @@ def update_assignment_times(
     return EmployeeDaySchedule(
         employee_name=schedule.employee_name,
         day_of_week=schedule.day_of_week,
+        date=schedule.date,
         periods=updated_periods,
         total_hours=total_hours,
         shift_start=new_start if total_hours > 0 else None,

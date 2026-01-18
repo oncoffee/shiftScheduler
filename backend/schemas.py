@@ -70,6 +70,7 @@ class WeeklyScheduleResult(BaseModel):
 class ShiftUpdateRequest(BaseModel):
     employee_name: str
     day_of_week: str
+    date: str | None = None
     new_shift_start: str
     new_shift_end: str
     new_employee_name: str | None = None

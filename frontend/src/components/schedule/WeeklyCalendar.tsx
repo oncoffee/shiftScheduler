@@ -57,7 +57,8 @@ interface WeeklyCalendarProps {
     newEnd: string,
     originalStart: string,
     originalEnd: string,
-    newEmployeeName?: string
+    newEmployeeName?: string,
+    date?: string | null
   ) => void;
   onToggleLock?: (employeeName: string, date: string) => void;
   onShiftClick?: (shift: EmployeeDaySchedule) => void;
@@ -664,7 +665,8 @@ export function WeeklyCalendar({
           newEnd,
           originalStart,
           originalEnd,
-          newEmployeeName
+          newEmployeeName,
+          activeShift.date
         );
       }
 
@@ -701,7 +703,9 @@ export function WeeklyCalendar({
           newStart,
           newEnd,
           originalStart,
-          originalEnd
+          originalEnd,
+          undefined,
+          shift.date
         );
       };
 

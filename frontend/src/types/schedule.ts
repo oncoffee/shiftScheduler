@@ -78,6 +78,7 @@ export interface DragOperation {
 export interface ShiftEditRequest {
   employee_name: string;
   day_of_week: string;
+  date?: string | null;
   new_shift_start: string;
   new_shift_end: string;
   new_employee_name?: string;
