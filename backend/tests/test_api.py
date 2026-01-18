@@ -4,36 +4,96 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 
-@pytest.fixture(autouse=True)
+# Module-level mocks to prevent reimport issues
+_mock_gspread = MagicMock()
+_mock_gc = MagicMock()
+_mock_book = MagicMock()
+_mock_book.worksheet.return_value.get_all_records.return_value = []
+_mock_gc.open_by_key.return_value = _mock_book
+_mock_gspread.service_account.return_value = _mock_gc
+
+_mock_motor = MagicMock()
+
+
+@pytest.fixture(scope="module", autouse=True)
 def mock_dependencies():
     """Mock all external dependencies before importing the app."""
-    # Mock gspread
-    mock_gspread = MagicMock()
-    mock_gc = MagicMock()
-    mock_book = MagicMock()
-    mock_book.worksheet.return_value.get_all_records.return_value = []
-    mock_gc.open_by_key.return_value = mock_book
-    mock_gspread.service_account.return_value = mock_gc
-
-    # Mock motor and beanie
-    mock_motor = MagicMock()
-    mock_beanie = MagicMock()
-    mock_beanie.init_beanie = AsyncMock()
-
     with patch.dict(
         sys.modules,
         {
-            "gspread": mock_gspread,
-            "motor": mock_motor,
-            "motor.motor_asyncio": mock_motor,
+            "gspread": _mock_gspread,
+            "motor": _mock_motor,
+            "motor.motor_asyncio": _mock_motor,
         },
     ):
         yield
 
 
+def _create_find_chain_mock(return_value=None):
+    """Create a mock that supports the full find chain."""
+    if return_value is None:
+        return_value = []
+
+    find_result = MagicMock()
+    find_result.count = AsyncMock(return_value=len(return_value) if isinstance(return_value, list) else 0)
+
+    sort_result = MagicMock()
+    skip_result = MagicMock()
+    limit_result = MagicMock()
+
+    find_result.sort = MagicMock(return_value=sort_result)
+    sort_result.skip = MagicMock(return_value=skip_result)
+    skip_result.limit = MagicMock(return_value=limit_result)
+    limit_result.to_list = AsyncMock(return_value=return_value)
+
+    find_result.to_list = AsyncMock(return_value=return_value)
+    sort_result.to_list = AsyncMock(return_value=return_value)
+    find_result.update_many = AsyncMock()
+
+    return find_result
+
+
+class _QueryFieldMock:
+    """A simple mock field that supports comparison operators for Beanie query building."""
+
+    def __ge__(self, other):
+        return MagicMock()
+
+    def __le__(self, other):
+        return MagicMock()
+
+    def __gt__(self, other):
+        return MagicMock()
+
+    def __lt__(self, other):
+        return MagicMock()
+
+    def __eq__(self, other):
+        return MagicMock()
+
+    def __ne__(self, other):
+        return MagicMock()
+
+
+def _create_document_mock_with_fields():
+    """Create a mock Document class with comparable field attributes."""
+    mock_doc = MagicMock()
+    mock_doc.date = _QueryFieldMock()
+    mock_doc.store_name = _QueryFieldMock()
+    mock_doc.employee_name = _QueryFieldMock()
+    mock_doc.is_current = _QueryFieldMock()
+    mock_doc.is_locked = _QueryFieldMock()
+    mock_doc.total_hours = _QueryFieldMock()
+    return mock_doc
+
+
 @pytest.fixture
-def mock_db():
+def mock_db(mock_dependencies):
     """Mock MongoDB operations."""
+    mock_assignment = _create_document_mock_with_fields()
+    mock_daily_summary = _create_document_mock_with_fields()
+    mock_schedule = _create_document_mock_with_fields()
+
     with patch("app.init_db", new_callable=AsyncMock) as mock_init, patch(
         "app.close_db", new_callable=AsyncMock
     ) as mock_close, patch(
@@ -43,13 +103,39 @@ def mock_db():
     ) as mock_store, patch(
         "app.ConfigDoc"
     ) as mock_config, patch(
-        "app.ScheduleRunDoc"
-    ) as mock_schedule:
+        "app.ScheduleRunDoc", mock_schedule
+    ), patch(
+        "app.ComplianceRuleDoc"
+    ) as mock_compliance, patch(
+        "app.AssignmentDoc", mock_assignment
+    ), patch(
+        "app.DailySummaryDoc", mock_daily_summary
+    ), patch(
+        "app.AssignmentEditDoc"
+    ) as mock_edit, patch(
+        "db.ConfigDoc"
+    ) as mock_db_config, patch(
+        "db.ComplianceRuleDoc"
+    ) as mock_db_compliance, patch(
+        "db.StoreDoc"
+    ) as mock_db_store:
         # Mock find operations to return empty lists by default
         mock_emp.find.return_value.to_list = AsyncMock(return_value=[])
         mock_store.find.return_value.to_list = AsyncMock(return_value=[])
+        mock_store.find_one = AsyncMock(return_value=None)
         mock_config.find_one = AsyncMock(return_value=None)
         mock_schedule.find_one = AsyncMock(return_value=None)
+        mock_schedule.find = MagicMock(return_value=_create_find_chain_mock([]))
+        mock_compliance.find_one = AsyncMock(return_value=None)
+        mock_assignment.find = MagicMock(return_value=_create_find_chain_mock([]))
+        mock_assignment.find_one = AsyncMock(return_value=None)
+        mock_daily_summary.find = MagicMock(return_value=_create_find_chain_mock([]))
+        mock_daily_summary.find_one = AsyncMock(return_value=None)
+
+        # Mock db module imports (used by compliance engine)
+        mock_db_config.find_one = AsyncMock(return_value=None)
+        mock_db_compliance.find_one = AsyncMock(return_value=None)
+        mock_db_store.find_one = AsyncMock(return_value=None)
 
         yield {
             "init_db": mock_init,
@@ -58,6 +144,10 @@ def mock_db():
             "StoreDoc": mock_store,
             "ConfigDoc": mock_config,
             "ScheduleRunDoc": mock_schedule,
+            "ComplianceRuleDoc": mock_compliance,
+            "AssignmentDoc": mock_assignment,
+            "DailySummaryDoc": mock_daily_summary,
+            "AssignmentEditDoc": mock_edit,
         }
 
 
@@ -103,6 +193,7 @@ def test_solver_run_rejects_invalid_pass_key(client):
 def test_solver_run_accepts_valid_pass_key(client, mock_dependencies, mock_db):
     """Test that /solver/run accepts valid pass_key."""
     from schemas import WeeklyScheduleResult
+    from datetime import datetime
 
     mock_result = WeeklyScheduleResult(
         start_date="2024-01-15",
@@ -118,9 +209,29 @@ def test_solver_run_accepts_valid_pass_key(client, mock_dependencies, mock_db):
     # Mock the schedule run persistence
     mock_db["ScheduleRunDoc"].find.return_value.update_many = AsyncMock()
 
+    # Create a proper mock schedule run for the find_one calls after persist
+    mock_schedule_run = MagicMock()
+    mock_schedule_run.start_date = datetime(2024, 1, 15)
+    mock_schedule_run.end_date = datetime(2024, 1, 21)
+    mock_schedule_run.store_name = "Test Store"
+    mock_schedule_run.generated_at = datetime(2024, 1, 15, 10, 0, 0)
+    mock_schedule_run.total_weekly_cost = 0.0
+    mock_schedule_run.total_dummy_worker_cost = 0.0
+    mock_schedule_run.total_short_shift_penalty = 0.0
+    mock_schedule_run.status = "optimal"
+    mock_schedule_run.has_warnings = False
+    mock_schedule_run.is_edited = False
+    mock_schedule_run.last_edited_at = None
+    mock_db["ScheduleRunDoc"].find_one = AsyncMock(return_value=mock_schedule_run)
+
+    mock_db["AssignmentDoc"].find = MagicMock(return_value=_create_find_chain_mock([]))
+    mock_db["DailySummaryDoc"].find = MagicMock(return_value=_create_find_chain_mock([]))
+
     with patch("app.main") as mock_main, patch(
         "app.SOLVER_PASS_KEY", "testkey"
-    ), patch("app._persist_schedule_result", new_callable=AsyncMock):
+    ), patch("app._persist_schedule_result", new_callable=AsyncMock), patch(
+        "app._run_compliance_validation", new_callable=AsyncMock
+    ):
         mock_main.return_value = mock_result
         response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
 

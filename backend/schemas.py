@@ -125,3 +125,100 @@ class ToggleLockRequest(BaseModel):
 class ToggleLockResponse(BaseModel):
     success: bool
     updated_schedule: WeeklyScheduleResult
+
+
+# ============================================================================
+# New Assignments API Response Models
+# ============================================================================
+
+from typing import Literal
+
+
+AssignmentSourceType = Literal["solver", "manual"]
+EditTypeValue = Literal["create", "update", "delete", "lock", "unlock"]
+
+
+class AssignmentResponse(BaseModel):
+    """Response model for a single assignment."""
+    id: str
+    employee_name: str
+    date: str
+    day_of_week: str
+    store_name: str
+    shift_start: str | None
+    shift_end: str | None
+    total_hours: float
+    is_short_shift: bool
+    is_locked: bool
+    source: AssignmentSourceType
+    periods: list[ShiftPeriod]
+    created_at: str
+    updated_at: str
+    solver_run_id: str | None
+
+
+class AssignmentListResponse(BaseModel):
+    """Response model for paginated assignment list."""
+    items: list[AssignmentResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class DailySummaryResponse(BaseModel):
+    """Response model for a daily summary."""
+    id: str
+    store_name: str
+    date: str
+    day_of_week: str
+    total_cost: float
+    employees_scheduled: int
+    total_labor_hours: float
+    dummy_worker_cost: float
+    short_shift_penalty: float
+    unfilled_periods: list[UnfilledPeriod]
+    compliance_violations: list[ComplianceViolationSchema]
+    created_at: str
+    updated_at: str
+
+
+class DailySummaryListResponse(BaseModel):
+    """Response model for paginated daily summary list."""
+    items: list[DailySummaryResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class AssignmentUpdateResponse(BaseModel):
+    """Response model for assignment update."""
+    success: bool
+    assignment: AssignmentResponse
+
+
+class AssignmentDeleteResponse(BaseModel):
+    """Response model for assignment deletion."""
+    success: bool
+    deleted_id: str
+
+
+class AssignmentEditResponse(BaseModel):
+    """Response model for assignment edit audit record."""
+    id: str
+    assignment_id: str | None
+    employee_name: str
+    date: str
+    store_name: str
+    edit_type: EditTypeValue
+    previous_values: dict | None
+    new_values: dict | None
+    edited_at: str
+    edited_by: str | None
+
+
+class AssignmentEditListResponse(BaseModel):
+    """Response model for paginated assignment edit list."""
+    items: list[AssignmentEditResponse]
+    total: int
+    limit: int
+    offset: int

@@ -1,10 +1,19 @@
+import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from bson import ObjectId
+from bson.errors import InvalidId
+from pymongo import UpdateOne
+
+from utils import utc_now
+
+logger = logging.getLogger(__name__)
 
 from model_run import main
 import data_import
@@ -20,6 +29,20 @@ from schemas import (
     BatchUpdateResponse,
     ToggleLockRequest,
     ToggleLockResponse,
+    # New response models
+    AssignmentResponse,
+    AssignmentListResponse,
+    DailySummaryResponse,
+    DailySummaryListResponse,
+    AssignmentUpdateResponse,
+    AssignmentDeleteResponse,
+    AssignmentEditResponse,
+    AssignmentEditListResponse,
+    ShiftPeriod,
+    UnfilledPeriod,
+    ComplianceViolationSchema,
+    EmployeeDaySchedule,
+    DayScheduleSummary,
 )
 from cost_calculator import (
     validate_schedule_change,
@@ -40,9 +63,44 @@ from db import (
     ShiftPeriodEmbed,
     ComplianceRuleDoc,
     ComplianceViolation,
+    # New separate assignment collections
+    AssignmentDoc,
+    DailySummaryDoc,
+    AssignmentEditDoc,
 )
-from db.database import close_db
+from db.database import close_db, get_database
 from db.models import StoreHours
+
+
+# ISO date format regex for validation
+ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_date(date_str: str, param_name: str) -> None:
+    """Validate ISO date format and raise HTTPException if invalid."""
+    if not ISO_DATE_PATTERN.match(date_str):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date format for {param_name}. Use YYYY-MM-DD."
+        )
+    try:
+        date.fromisoformat(date_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date value for {param_name}. Use valid YYYY-MM-DD."
+        )
+
+
+def _validate_object_id(id_str: str) -> ObjectId:
+    """Validate and parse ObjectId, raising appropriate HTTPException."""
+    try:
+        return ObjectId(id_str)
+    except InvalidId:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid ID format: '{id_str}'. Must be a valid 24-character hex string."
+        )
 
 load_dotenv()
 
@@ -107,19 +165,22 @@ async def run_ep(pass_key: str, start_date: str, end_date: str) -> WeeklySchedul
         raise HTTPException(status_code=400, detail="end_date must be after start_date")
 
     locked_shifts = []
-    current_schedule = await ScheduleRunDoc.find_one(ScheduleRunDoc.is_current == True)
-    if current_schedule:
-        for assignment in current_schedule.assignments:
-            if assignment.is_locked and assignment.total_hours > 0 and assignment.date:
-                scheduled_periods = [
-                    p.period_index for p in assignment.periods if p.scheduled
-                ]
-                if scheduled_periods:
-                    locked_shifts.append({
-                        "employee_name": assignment.employee_name,
-                        "date": assignment.date,
-                        "periods": scheduled_periods,
-                    })
+    locked_assignments = await AssignmentDoc.find(
+        AssignmentDoc.is_locked == True,
+        AssignmentDoc.total_hours > 0,
+    ).to_list()
+
+    for assignment in locked_assignments:
+        if assignment.date:
+            scheduled_periods = [
+                p.period_index for p in assignment.periods if p.scheduled
+            ]
+            if scheduled_periods:
+                locked_shifts.append({
+                    "employee_name": assignment.employee_name,
+                    "date": assignment.date,
+                    "periods": scheduled_periods,
+                })
 
     staffing_requirements = await get_staffing_requirements()
 
@@ -176,104 +237,184 @@ async def run_ep(pass_key: str, start_date: str, end_date: str) -> WeeklySchedul
 
     # Reload to get updated violations
     merged_schedule = await ScheduleRunDoc.find_one(ScheduleRunDoc.is_current == True)
-    return _schedule_run_to_result(merged_schedule)
+    return await _schedule_run_to_result(merged_schedule)
+
+
+async def _persist_assignments_and_summaries(
+    result: WeeklyScheduleResult,
+    locked_lookup: dict,
+    solver_run_id: str | None = None,
+):
+    """
+    Persist schedule data to the AssignmentDoc and DailySummaryDoc collections.
+    Uses bulk upsert operations for better performance.
+    Locked shifts are preserved (not overwritten).
+    """
+    store_name = result.store_name
+    dates_in_result = set()
+
+    # Collect all dates from the result
+    for schedule in result.schedules:
+        if schedule.date:
+            dates_in_result.add(schedule.date)
+
+    if not dates_in_result:
+        return
+
+    # Get existing locked assignments for these dates (should not be overwritten)
+    existing_locked = await AssignmentDoc.find(
+        {"store_name": store_name, "date": {"$in": list(dates_in_result)}, "is_locked": True}
+    ).to_list()
+
+    locked_keys = {(a.employee_name, a.date) for a in existing_locked}
+
+    # Prepare bulk operations for assignments
+    assignment_ops = []
+    now = utc_now()
+
+    for schedule in result.schedules:
+        if not schedule.date:
+            continue
+
+        schedule_key = (schedule.employee_name, schedule.date)
+
+        # Skip if this assignment is locked in the database
+        if schedule_key in locked_keys:
+            continue
+
+        # Check if locked via the locked_shifts parameter
+        is_locked_from_request = schedule_key in locked_lookup
+        locked_periods = locked_lookup.get(schedule_key, set())
+
+        periods = [
+            {
+                "period_index": p.period_index,
+                "start_time": p.start_time,
+                "end_time": p.end_time,
+                "scheduled": p.scheduled,
+                "is_locked": p.period_index in locked_periods if p.scheduled else False,
+                "is_break": getattr(p, 'is_break', False),
+            }
+            for p in schedule.periods
+        ]
+
+        # Build upsert operation
+        filter_doc = {
+            "employee_name": schedule.employee_name,
+            "date": schedule.date,
+            "store_name": store_name,
+        }
+        update_doc = {
+            "$set": {
+                "day_of_week": schedule.day_of_week,
+                "shift_start": schedule.shift_start,
+                "shift_end": schedule.shift_end,
+                "total_hours": schedule.total_hours,
+                "is_short_shift": schedule.is_short_shift,
+                "is_locked": is_locked_from_request,
+                "source": "solver",
+                "periods": periods,
+                "updated_at": now,
+                "solver_run_id": solver_run_id,
+            },
+            "$setOnInsert": {
+                "created_at": now,
+            },
+        }
+        assignment_ops.append(UpdateOne(filter_doc, update_doc, upsert=True))
+
+    # Prepare bulk operations for daily summaries
+    summary_ops = []
+
+    for summary in result.daily_summaries:
+        if not summary.date:
+            continue
+
+        unfilled = [
+            {
+                "period_index": u.period_index,
+                "start_time": u.start_time,
+                "end_time": u.end_time,
+                "workers_needed": u.workers_needed,
+            }
+            for u in summary.unfilled_periods
+        ]
+
+        filter_doc = {
+            "store_name": store_name,
+            "date": summary.date,
+        }
+        update_doc = {
+            "$set": {
+                "day_of_week": summary.day_of_week,
+                "total_cost": summary.total_cost,
+                "employees_scheduled": summary.employees_scheduled,
+                "total_labor_hours": summary.total_labor_hours,
+                "dummy_worker_cost": summary.dummy_worker_cost,
+                "short_shift_penalty": 0,
+                "unfilled_periods": unfilled,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_at": now,
+            },
+        }
+        summary_ops.append(UpdateOne(filter_doc, update_doc, upsert=True))
+
+    # Execute bulk operations
+    db = get_database()
+    if assignment_ops:
+        await db.assignments.bulk_write(assignment_ops, ordered=False)
+    if summary_ops:
+        await db.daily_summaries.bulk_write(summary_ops, ordered=False)
 
 
 async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: list[dict] | None = None):
+    """
+    Persist schedule result to database.
+    - ScheduleRunDoc stores only metadata (dates, totals, status)
+    - AssignmentDoc stores individual assignments (one per employee/day)
+    - DailySummaryDoc stores daily cost/staffing summaries
+    """
     locked_lookup = {}
     if locked_shifts:
         for ls in locked_shifts:
             key = (ls["employee_name"], ls["date"])
             locked_lookup[key] = set(ls["periods"])
 
-    new_assignments = []
-    for schedule in result.schedules:
-        schedule_key = (schedule.employee_name, schedule.date)
-        is_schedule_locked = schedule_key in locked_lookup
-        locked_periods = locked_lookup.get(schedule_key, set())
-
-        periods = [
-            ShiftPeriodEmbed(
-                period_index=p.period_index,
-                start_time=p.start_time,
-                end_time=p.end_time,
-                scheduled=p.scheduled,
-                is_locked=p.period_index in locked_periods if p.scheduled else False,
-                is_break=p.is_break,
-            )
-            for p in schedule.periods
-        ]
-        new_assignments.append(
-            Assignment(
-                employee_name=schedule.employee_name,
-                day_of_week=schedule.day_of_week,
-                date=schedule.date,
-                total_hours=schedule.total_hours,
-                shift_start=schedule.shift_start,
-                shift_end=schedule.shift_end,
-                is_short_shift=schedule.is_short_shift,
-                is_locked=is_schedule_locked,
-                periods=periods,
-            )
-        )
-
-    new_daily_summaries = []
-    for summary in result.daily_summaries:
-        unfilled = [
-            UnfilledPeriodEmbed(
-                period_index=u.period_index,
-                start_time=u.start_time,
-                end_time=u.end_time,
-                workers_needed=u.workers_needed,
-            )
-            for u in summary.unfilled_periods
-        ]
-        new_daily_summaries.append(
-            DailySummary(
-                day_of_week=summary.day_of_week,
-                date=summary.date,
-                total_cost=summary.total_cost,
-                employees_scheduled=summary.employees_scheduled,
-                total_labor_hours=summary.total_labor_hours,
-                dummy_worker_cost=summary.dummy_worker_cost,
-                unfilled_periods=unfilled,
-            )
-        )
-
     new_start = date.fromisoformat(result.start_date)
     new_end = date.fromisoformat(result.end_date)
-    new_dates = set(a.date for a in new_assignments if a.date)
 
+    # Get current schedule to determine date range
     current_schedule = await ScheduleRunDoc.find_one(ScheduleRunDoc.is_current == True)
 
     if current_schedule and current_schedule.store_name == result.store_name:
-        existing_assignments = [
-            a for a in current_schedule.assignments
-            if a.date and a.date not in new_dates
-        ]
-        existing_summaries = [
-            s for s in current_schedule.daily_summaries
-            if s.date and s.date not in new_dates
-        ]
-
-        merged_assignments = existing_assignments + new_assignments
-        merged_summaries = existing_summaries + new_daily_summaries
-
-        all_dates = []
-        for a in merged_assignments:
-            if a.date:
-                all_dates.append(date.fromisoformat(a.date))
+        # Merge date ranges with existing schedule
+        all_dates = [new_start, new_end]
         if current_schedule.start_date:
             all_dates.append(current_schedule.start_date.date())
         if current_schedule.end_date:
             all_dates.append(current_schedule.end_date.date())
-        all_dates.extend([new_start, new_end])
 
         merged_start = min(all_dates)
         merged_end = max(all_dates)
 
-        total_cost = sum(s.total_cost for s in merged_summaries)
-        total_dummy = sum(s.dummy_worker_cost for s in merged_summaries)
+        # Query existing summaries to calculate totals
+        existing_summaries = await DailySummaryDoc.find(
+            DailySummaryDoc.store_name == result.store_name,
+            DailySummaryDoc.date >= merged_start.isoformat(),
+            DailySummaryDoc.date <= merged_end.isoformat(),
+        ).to_list()
+
+        # Calculate totals from result (new data will overwrite via upsert)
+        new_dates = {s.date for s in result.daily_summaries if s.date}
+        existing_cost = sum(s.total_cost for s in existing_summaries if s.date not in new_dates)
+        existing_dummy = sum(s.dummy_worker_cost for s in existing_summaries if s.date not in new_dates)
+        new_cost = sum(s.total_cost for s in result.daily_summaries)
+        new_dummy = sum(s.dummy_worker_cost for s in result.daily_summaries)
+
+        total_cost = existing_cost + new_cost
+        total_dummy = existing_dummy + new_dummy
         total_short_shift = result.total_short_shift_penalty
 
         await current_schedule.set({
@@ -287,10 +428,10 @@ async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: 
             "has_warnings": total_dummy > 0 or total_short_shift > 0,
             "is_edited": False,
             "last_edited_at": None,
-            "daily_summaries": merged_summaries,
-            "assignments": merged_assignments,
         })
+        solver_run_id = str(current_schedule.id)
     else:
+        # Create new schedule run (metadata only)
         await ScheduleRunDoc.find(ScheduleRunDoc.is_current == True).update_many(
             {"$set": {"is_current": False}}
         )
@@ -306,14 +447,16 @@ async def _persist_schedule_result(result: WeeklyScheduleResult, locked_shifts: 
             status=result.status,
             has_warnings=result.has_warnings,
             is_current=True,
-            daily_summaries=new_daily_summaries,
-            assignments=new_assignments,
         )
         await schedule_run.insert()
+        solver_run_id = str(schedule_run.id)
+
+    # Persist assignments and summaries to separate collections
+    await _persist_assignments_and_summaries(result, locked_lookup, solver_run_id)
 
 
 async def _run_compliance_validation(schedule_run: ScheduleRunDoc):
-    """Run compliance validation and save violations to the schedule."""
+    """Run compliance validation and save violations to daily summaries."""
     from compliance.engine import validate_schedule_compliance
 
     # Get employees for validation
@@ -323,36 +466,49 @@ async def _run_compliance_validation(schedule_run: ScheduleRunDoc):
     config = await ConfigDoc.find_one()
     if config and config.compliance_mode == "off":
         # Clear any existing violations if compliance is off
-        await schedule_run.set({"compliance_violations": [], "has_warnings": schedule_run.has_warnings})
+        if schedule_run.start_date and schedule_run.end_date:
+            start_str = schedule_run.start_date.strftime("%Y-%m-%d")
+            end_str = schedule_run.end_date.strftime("%Y-%m-%d")
+            await DailySummaryDoc.find(
+                DailySummaryDoc.store_name == schedule_run.store_name,
+                DailySummaryDoc.date >= start_str,
+                DailySummaryDoc.date <= end_str,
+            ).update_many({"$set": {"compliance_violations": []}})
         return
 
     # Run validation (function fetches rules internally based on store's jurisdiction)
     result = await validate_schedule_compliance(schedule_run, employees)
 
-    # Convert violations to embedded documents
-    violations = [
-        ComplianceViolation(
-            rule_type=v.rule_type.value,
-            severity=v.severity.value,
-            employee_name=v.employee_name,
-            date=v.date,
-            message=v.message,
-            details=v.details,
+    violations_by_date: dict[str, list] = {}
+    for v in result.violations:
+        date_key = v.date or "unknown"
+        if date_key not in violations_by_date:
+            violations_by_date[date_key] = []
+        violations_by_date[date_key].append(
+            ComplianceViolation(
+                rule_type=v.rule_type.value,
+                severity=v.severity.value,
+                employee_name=v.employee_name,
+                date=v.date,
+                message=v.message,
+                details=v.details,
+            ).model_dump()
         )
-        for v in result.violations
-    ]
 
-    # Update schedule with violations
+    for date_str, date_violations in violations_by_date.items():
+        await DailySummaryDoc.find_one(
+            DailySummaryDoc.store_name == schedule_run.store_name,
+            DailySummaryDoc.date == date_str,
+        ).update({"$set": {"compliance_violations": date_violations}})
+
+    # Update has_warnings flag on schedule run
     has_warnings = (
         schedule_run.total_dummy_worker_cost > 0 or
         schedule_run.total_short_shift_penalty > 0 or
-        len(violations) > 0
+        len(result.violations) > 0
     )
 
-    await schedule_run.set({
-        "compliance_violations": violations,
-        "has_warnings": has_warnings,
-    })
+    await schedule_run.set({"has_warnings": has_warnings})
 
 
 @app.get("/schedule/results")
@@ -362,67 +518,18 @@ async def get_schedule_results() -> WeeklyScheduleResult | None:
     if not schedule_run:
         return None
 
-    return _schedule_run_to_result(schedule_run)
+    return await _schedule_run_to_result(schedule_run)
 
 
-def _schedule_run_to_result(schedule_run: ScheduleRunDoc) -> WeeklyScheduleResult:
-    from schemas import EmployeeDaySchedule, DayScheduleSummary, ShiftPeriod, UnfilledPeriod, ComplianceViolationSchema
-
-    schedules = []
-    for assignment in schedule_run.assignments:
-        periods = [
-            ShiftPeriod(
-                period_index=p.period_index,
-                start_time=p.start_time,
-                end_time=p.end_time,
-                scheduled=p.scheduled,
-                is_locked=getattr(p, 'is_locked', False),
-                is_break=getattr(p, 'is_break', False),
-            )
-            for p in assignment.periods
-        ]
-        schedules.append(
-            EmployeeDaySchedule(
-                employee_name=assignment.employee_name,
-                day_of_week=assignment.day_of_week,
-                date=getattr(assignment, 'date', None),
-                periods=periods,
-                total_hours=assignment.total_hours,
-                shift_start=assignment.shift_start,
-                shift_end=assignment.shift_end,
-                is_short_shift=assignment.is_short_shift,
-                is_locked=getattr(assignment, 'is_locked', False),
-            )
-        )
-
-    daily_summaries = []
-    for summary in schedule_run.daily_summaries:
-        unfilled = [
-            UnfilledPeriod(
-                period_index=u.period_index,
-                start_time=u.start_time,
-                end_time=u.end_time,
-                workers_needed=u.workers_needed,
-            )
-            for u in summary.unfilled_periods
-        ]
-        daily_summaries.append(
-            DayScheduleSummary(
-                day_of_week=summary.day_of_week,
-                date=getattr(summary, 'date', None),
-                total_cost=summary.total_cost,
-                employees_scheduled=summary.employees_scheduled,
-                total_labor_hours=summary.total_labor_hours,
-                dummy_worker_cost=summary.dummy_worker_cost,
-                unfilled_periods=unfilled,
-            )
-        )
-
-    # Handle backward compatibility for old schedules without dates
+async def _schedule_run_to_result(schedule_run: ScheduleRunDoc) -> WeeklyScheduleResult:
+    """
+    Build WeeklyScheduleResult from ScheduleRunDoc metadata and separate collections.
+    Reads assignments and daily summaries from AssignmentDoc and DailySummaryDoc.
+    """
+    # Determine date range
     if schedule_run.start_date:
         start_date_str = schedule_run.start_date.strftime("%Y-%m-%d")
     else:
-        # Fallback for old data - use generated_at date and derive Monday of that week
         gen_date = schedule_run.generated_at.date()
         days_since_monday = gen_date.weekday()
         monday = gen_date - timedelta(days=days_since_monday)
@@ -431,25 +538,88 @@ def _schedule_run_to_result(schedule_run: ScheduleRunDoc) -> WeeklyScheduleResul
     if schedule_run.end_date:
         end_date_str = schedule_run.end_date.strftime("%Y-%m-%d")
     else:
-        # Fallback - assume week schedule (Monday to Sunday)
         gen_date = schedule_run.generated_at.date()
         days_since_monday = gen_date.weekday()
         monday = gen_date - timedelta(days=days_since_monday)
         sunday = monday + timedelta(days=6)
         end_date_str = sunday.strftime("%Y-%m-%d")
 
-    # Convert compliance violations
-    violations = [
-        ComplianceViolationSchema(
-            rule_type=v.rule_type,
-            severity=v.severity,
-            employee_name=v.employee_name,
-            date=v.date,
-            message=v.message,
-            details=v.details,
+    # Query assignments from separate collection
+    assignments = await AssignmentDoc.find(
+        AssignmentDoc.store_name == schedule_run.store_name,
+        AssignmentDoc.date >= start_date_str,
+        AssignmentDoc.date <= end_date_str,
+    ).to_list()
+
+    schedules = []
+    for a in assignments:
+        periods = [
+            ShiftPeriod(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+                is_locked=p.is_locked,
+                is_break=p.is_break,
+            )
+            for p in a.periods
+        ]
+        schedules.append(
+            EmployeeDaySchedule(
+                employee_name=a.employee_name,
+                day_of_week=a.day_of_week,
+                date=a.date,
+                periods=periods,
+                total_hours=a.total_hours,
+                shift_start=a.shift_start,
+                shift_end=a.shift_end,
+                is_short_shift=a.is_short_shift,
+                is_locked=a.is_locked,
+            )
         )
-        for v in (schedule_run.compliance_violations or [])
-    ]
+
+    # Query daily summaries from separate collection
+    summaries = await DailySummaryDoc.find(
+        DailySummaryDoc.store_name == schedule_run.store_name,
+        DailySummaryDoc.date >= start_date_str,
+        DailySummaryDoc.date <= end_date_str,
+    ).to_list()
+
+    daily_summaries = []
+    all_violations = []
+    for s in summaries:
+        unfilled = [
+            UnfilledPeriod(
+                period_index=u.period_index,
+                start_time=u.start_time,
+                end_time=u.end_time,
+                workers_needed=u.workers_needed,
+            )
+            for u in s.unfilled_periods
+        ]
+        daily_summaries.append(
+            DayScheduleSummary(
+                day_of_week=s.day_of_week,
+                date=s.date,
+                total_cost=s.total_cost,
+                employees_scheduled=s.employees_scheduled,
+                total_labor_hours=s.total_labor_hours,
+                dummy_worker_cost=s.dummy_worker_cost,
+                unfilled_periods=unfilled,
+            )
+        )
+        # Collect compliance violations from daily summaries
+        for v in s.compliance_violations:
+            all_violations.append(
+                ComplianceViolationSchema(
+                    rule_type=v.rule_type,
+                    severity=v.severity,
+                    employee_name=v.employee_name,
+                    date=v.date,
+                    message=v.message,
+                    details=v.details,
+                )
+            )
 
     return WeeklyScheduleResult(
         start_date=start_date_str,
@@ -465,8 +635,195 @@ def _schedule_run_to_result(schedule_run: ScheduleRunDoc) -> WeeklyScheduleResul
         has_warnings=schedule_run.has_warnings,
         is_edited=schedule_run.is_edited,
         last_edited_at=schedule_run.last_edited_at.isoformat() if schedule_run.last_edited_at else None,
-        compliance_violations=violations,
+        compliance_violations=all_violations,
     )
+
+
+async def _load_current_schedules(
+    store_name: str,
+    start_date: str,
+    end_date: str,
+) -> tuple[list[EmployeeDaySchedule], list[DayScheduleSummary]]:
+    """
+    Load current schedules and summaries from the separate collections.
+    Returns (schedules, summaries) for use in modification endpoints.
+    """
+    # Load assignments
+    assignments = await AssignmentDoc.find(
+        AssignmentDoc.store_name == store_name,
+        AssignmentDoc.date >= start_date,
+        AssignmentDoc.date <= end_date,
+    ).to_list()
+
+    current_schedules = []
+    for a in assignments:
+        periods = [
+            ShiftPeriod(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+                is_locked=p.is_locked,
+                is_break=p.is_break,
+            )
+            for p in a.periods
+        ]
+        current_schedules.append(
+            EmployeeDaySchedule(
+                employee_name=a.employee_name,
+                day_of_week=a.day_of_week,
+                date=a.date,
+                periods=periods,
+                total_hours=a.total_hours,
+                shift_start=a.shift_start,
+                shift_end=a.shift_end,
+                is_short_shift=a.is_short_shift,
+                is_locked=a.is_locked,
+            )
+        )
+
+    # Load daily summaries
+    summaries = await DailySummaryDoc.find(
+        DailySummaryDoc.store_name == store_name,
+        DailySummaryDoc.date >= start_date,
+        DailySummaryDoc.date <= end_date,
+    ).to_list()
+
+    current_summaries = []
+    for s in summaries:
+        unfilled = [
+            UnfilledPeriod(
+                period_index=u.period_index,
+                start_time=u.start_time,
+                end_time=u.end_time,
+                workers_needed=u.workers_needed,
+            )
+            for u in s.unfilled_periods
+        ]
+        current_summaries.append(
+            DayScheduleSummary(
+                day_of_week=s.day_of_week,
+                date=s.date,
+                total_cost=s.total_cost,
+                employees_scheduled=s.employees_scheduled,
+                total_labor_hours=s.total_labor_hours,
+                dummy_worker_cost=s.dummy_worker_cost,
+                unfilled_periods=unfilled,
+            )
+        )
+
+    return current_schedules, current_summaries
+
+
+async def _save_updated_schedules(
+    store_name: str,
+    updated_schedules: list[EmployeeDaySchedule],
+    updated_summaries: list[DayScheduleSummary],
+    schedule_run: ScheduleRunDoc,
+    total_cost: float,
+    total_dummy: float,
+    total_short_shift: float,
+) -> None:
+    """
+    Save updated schedules and summaries to the separate collections.
+    Also updates ScheduleRunDoc metadata.
+    """
+    now = utc_now()
+    db = get_database()
+
+    # Prepare assignment upsert operations
+    assignment_ops = []
+    for schedule in updated_schedules:
+        if not schedule.date:
+            continue
+
+        periods = [
+            {
+                "period_index": p.period_index,
+                "start_time": p.start_time,
+                "end_time": p.end_time,
+                "scheduled": p.scheduled,
+                "is_locked": getattr(p, 'is_locked', False),
+                "is_break": getattr(p, 'is_break', False),
+            }
+            for p in schedule.periods
+        ]
+
+        filter_doc = {
+            "employee_name": schedule.employee_name,
+            "date": schedule.date,
+            "store_name": store_name,
+        }
+        update_doc = {
+            "$set": {
+                "day_of_week": schedule.day_of_week,
+                "shift_start": schedule.shift_start,
+                "shift_end": schedule.shift_end,
+                "total_hours": schedule.total_hours,
+                "is_short_shift": schedule.is_short_shift,
+                "is_locked": getattr(schedule, 'is_locked', False),
+                "source": "manual",
+                "periods": periods,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_at": now,
+            },
+        }
+        assignment_ops.append(UpdateOne(filter_doc, update_doc, upsert=True))
+
+    # Prepare summary upsert operations
+    summary_ops = []
+    for summary in updated_summaries:
+        if not summary.date:
+            continue
+
+        unfilled = [
+            {
+                "period_index": u.period_index,
+                "start_time": u.start_time,
+                "end_time": u.end_time,
+                "workers_needed": u.workers_needed,
+            }
+            for u in summary.unfilled_periods
+        ]
+
+        filter_doc = {
+            "store_name": store_name,
+            "date": summary.date,
+        }
+        update_doc = {
+            "$set": {
+                "day_of_week": summary.day_of_week,
+                "total_cost": summary.total_cost,
+                "employees_scheduled": summary.employees_scheduled,
+                "total_labor_hours": summary.total_labor_hours,
+                "dummy_worker_cost": summary.dummy_worker_cost,
+                "unfilled_periods": unfilled,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_at": now,
+            },
+        }
+        summary_ops.append(UpdateOne(filter_doc, update_doc, upsert=True))
+
+    # Execute bulk operations
+    if assignment_ops:
+        await db.assignments.bulk_write(assignment_ops, ordered=False)
+    if summary_ops:
+        await db.daily_summaries.bulk_write(summary_ops, ordered=False)
+
+    # Update ScheduleRunDoc metadata
+    has_warnings = total_dummy > 0 or total_short_shift > 0
+    await schedule_run.set({
+        "total_weekly_cost": total_cost,
+        "total_dummy_worker_cost": total_dummy,
+        "total_short_shift_penalty": total_short_shift,
+        "has_warnings": has_warnings,
+        "is_edited": True,
+        "last_edited_at": now,
+    })
 
 
 @app.get("/schedule/history")
@@ -526,7 +883,680 @@ async def get_schedule_by_id(schedule_id: str) -> WeeklyScheduleResult:
     if not run:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    return _schedule_run_to_result(run)
+    return await _schedule_run_to_result(run)
+
+
+# ============================================================================
+# New Assignments API (Separate Collection)
+# ============================================================================
+
+
+def _assignment_to_response(a: AssignmentDoc) -> AssignmentResponse:
+    """Convert AssignmentDoc to AssignmentResponse."""
+    return AssignmentResponse(
+        id=str(a.id),
+        employee_name=a.employee_name,
+        date=a.date,
+        day_of_week=a.day_of_week,
+        store_name=a.store_name,
+        shift_start=a.shift_start,
+        shift_end=a.shift_end,
+        total_hours=a.total_hours,
+        is_short_shift=a.is_short_shift,
+        is_locked=a.is_locked,
+        source=a.source,
+        periods=[
+            ShiftPeriod(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+                is_locked=p.is_locked,
+                is_break=p.is_break,
+            )
+            for p in a.periods
+        ],
+        created_at=a.created_at.isoformat(),
+        updated_at=a.updated_at.isoformat(),
+        solver_run_id=a.solver_run_id,
+    )
+
+
+def _daily_summary_to_response(s: DailySummaryDoc) -> DailySummaryResponse:
+    """Convert DailySummaryDoc to DailySummaryResponse."""
+    return DailySummaryResponse(
+        id=str(s.id),
+        store_name=s.store_name,
+        date=s.date,
+        day_of_week=s.day_of_week,
+        total_cost=s.total_cost,
+        employees_scheduled=s.employees_scheduled,
+        total_labor_hours=s.total_labor_hours,
+        dummy_worker_cost=s.dummy_worker_cost,
+        short_shift_penalty=s.short_shift_penalty,
+        unfilled_periods=[
+            UnfilledPeriod(
+                period_index=u.period_index,
+                start_time=u.start_time,
+                end_time=u.end_time,
+                workers_needed=u.workers_needed,
+            )
+            for u in s.unfilled_periods
+        ],
+        compliance_violations=[
+            ComplianceViolationSchema(
+                rule_type=v.rule_type,
+                severity=v.severity,
+                employee_name=v.employee_name,
+                date=v.date,
+                message=v.message,
+                details=v.details,
+            )
+            for v in s.compliance_violations
+        ],
+        created_at=s.created_at.isoformat() if hasattr(s, 'created_at') and s.created_at else s.updated_at.isoformat(),
+        updated_at=s.updated_at.isoformat(),
+    )
+
+
+@app.get("/assignments", response_model=AssignmentListResponse)
+async def get_assignments(
+    store_name: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    employee_name: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+):
+    """
+    Query assignments from the new separate collection.
+    Filters by store, date range, and/or employee.
+    Supports pagination via limit and offset.
+    """
+    # Validate date formats
+    if start_date:
+        _validate_date(start_date, "start_date")
+    if end_date:
+        _validate_date(end_date, "end_date")
+
+    query = {}
+
+    if store_name:
+        query["store_name"] = store_name
+
+    if employee_name:
+        query["employee_name"] = employee_name
+
+    # Build date range filter
+    if start_date and end_date:
+        query["date"] = {"$gte": start_date, "$lte": end_date}
+    elif start_date:
+        query["date"] = {"$gte": start_date}
+    elif end_date:
+        query["date"] = {"$lte": end_date}
+
+    # Get total count for pagination
+    total = await AssignmentDoc.find(query).count()
+
+    # Get paginated results
+    assignments = await AssignmentDoc.find(query).sort(
+        [("date", 1), ("employee_name", 1)]
+    ).skip(offset).limit(limit).to_list()
+
+    return AssignmentListResponse(
+        items=[_assignment_to_response(a) for a in assignments],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/daily-summaries", response_model=DailySummaryListResponse)
+async def get_daily_summaries(
+    store_name: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+):
+    """
+    Query daily summaries from the new separate collection.
+    Supports pagination via limit and offset.
+    """
+    # Validate date formats
+    if start_date:
+        _validate_date(start_date, "start_date")
+    if end_date:
+        _validate_date(end_date, "end_date")
+
+    query = {}
+
+    if store_name:
+        query["store_name"] = store_name
+
+    if start_date and end_date:
+        query["date"] = {"$gte": start_date, "$lte": end_date}
+    elif start_date:
+        query["date"] = {"$gte": start_date}
+    elif end_date:
+        query["date"] = {"$lte": end_date}
+
+    # Get total count for pagination
+    total = await DailySummaryDoc.find(query).count()
+
+    # Get paginated results
+    summaries = await DailySummaryDoc.find(query).sort(
+        [("date", 1)]
+    ).skip(offset).limit(limit).to_list()
+
+    return DailySummaryListResponse(
+        items=[_daily_summary_to_response(s) for s in summaries],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/schedule/current")
+async def get_schedule_current(
+    store_name: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> WeeklyScheduleResult | None:
+    """
+    Assemble WeeklyScheduleResult from the new separate collections.
+    This provides backward compatibility with the existing API.
+    If no store_name specified, uses the first store found.
+    """
+    # Get store if not specified
+    if not store_name:
+        store = await StoreDoc.find_one()
+        if not store:
+            return None
+        store_name = store.store_name
+
+    # Default to current week if no dates specified
+    if not start_date or not end_date:
+        today = date.today()
+        days_since_monday = today.weekday()
+        monday = today - timedelta(days=days_since_monday)
+        sunday = monday + timedelta(days=6)
+        start_date = start_date or monday.isoformat()
+        end_date = end_date or sunday.isoformat()
+
+    # Query assignments
+    assignments = await AssignmentDoc.find(
+        AssignmentDoc.store_name == store_name,
+        AssignmentDoc.date >= start_date,
+        AssignmentDoc.date <= end_date,
+    ).to_list()
+
+    if not assignments:
+        # Fall back to old system if no data in new collections
+        return await get_schedule_results()
+
+    # Query daily summaries
+    summaries = await DailySummaryDoc.find(
+        DailySummaryDoc.store_name == store_name,
+        DailySummaryDoc.date >= start_date,
+        DailySummaryDoc.date <= end_date,
+    ).to_list()
+
+    # Convert to schema types
+    schedules = []
+    for a in assignments:
+        periods = [
+            ShiftPeriod(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+                is_locked=p.is_locked,
+                is_break=p.is_break,
+            )
+            for p in a.periods
+        ]
+        schedules.append(
+            EmployeeDaySchedule(
+                employee_name=a.employee_name,
+                day_of_week=a.day_of_week,
+                date=a.date,
+                periods=periods,
+                total_hours=a.total_hours,
+                shift_start=a.shift_start,
+                shift_end=a.shift_end,
+                is_short_shift=a.is_short_shift,
+                is_locked=a.is_locked,
+            )
+        )
+
+    daily_summaries = []
+    all_violations = []
+    for s in summaries:
+        unfilled = [
+            UnfilledPeriod(
+                period_index=u.period_index,
+                start_time=u.start_time,
+                end_time=u.end_time,
+                workers_needed=u.workers_needed,
+            )
+            for u in s.unfilled_periods
+        ]
+        daily_summaries.append(
+            DayScheduleSummary(
+                day_of_week=s.day_of_week,
+                date=s.date,
+                total_cost=s.total_cost,
+                employees_scheduled=s.employees_scheduled,
+                total_labor_hours=s.total_labor_hours,
+                dummy_worker_cost=s.dummy_worker_cost,
+                unfilled_periods=unfilled,
+            )
+        )
+        # Collect violations from daily summaries
+        for v in s.compliance_violations:
+            all_violations.append(
+                ComplianceViolationSchema(
+                    rule_type=v.rule_type,
+                    severity=v.severity,
+                    employee_name=v.employee_name,
+                    date=v.date,
+                    message=v.message,
+                    details=v.details,
+                )
+            )
+
+    # Calculate totals
+    total_cost = sum(s.total_cost for s in summaries)
+    total_dummy = sum(s.dummy_worker_cost for s in summaries)
+    total_short_shift = sum(s.short_shift_penalty for s in summaries)
+    has_warnings = total_dummy > 0 or total_short_shift > 0 or len(all_violations) > 0
+
+    # Check if any assignments were manually edited
+    is_edited = any(a.source == "manual" for a in assignments)
+    last_edited = max((a.updated_at for a in assignments if a.source == "manual"), default=None)
+
+    # Determine status based on data quality
+    # - "optimal" if all data looks complete
+    # - "edited" if manually modified
+    # - "partial" if some days are missing summaries
+    if is_edited:
+        status = "edited"
+    elif len(summaries) < 7:  # Less than a full week of summaries
+        status = "partial"
+    else:
+        status = "optimal"
+
+    return WeeklyScheduleResult(
+        start_date=start_date,
+        end_date=end_date,
+        store_name=store_name,
+        generated_at=utc_now().isoformat(),
+        schedules=schedules,
+        daily_summaries=daily_summaries,
+        total_weekly_cost=total_cost,
+        status=status,
+        total_dummy_worker_cost=total_dummy,
+        total_short_shift_penalty=total_short_shift,
+        has_warnings=has_warnings,
+        is_edited=is_edited,
+        last_edited_at=last_edited.isoformat() if last_edited else None,
+        compliance_violations=all_violations,
+    )
+
+
+class AssignmentUpdateRequest(BaseModel):
+    shift_start: str | None = None
+    shift_end: str | None = None
+    is_locked: bool | None = None
+
+
+async def _recalculate_daily_summary(store_name: str, date_str: str) -> None:
+    """
+    Recalculate and update the DailySummary for a specific date.
+    Called after assignment modifications to keep summaries in sync.
+    """
+    # Get all assignments for this date
+    assignments = await AssignmentDoc.find(
+        {"store_name": store_name, "date": date_str}
+    ).to_list()
+
+    # Convert to schema types for recalculation
+    schedules = []
+    for a in assignments:
+        periods = [
+            ShiftPeriod(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+                is_locked=p.is_locked,
+                is_break=p.is_break,
+            )
+            for p in a.periods
+        ]
+        schedules.append(EmployeeDaySchedule(
+            employee_name=a.employee_name,
+            day_of_week=a.day_of_week,
+            date=a.date,
+            periods=periods,
+            total_hours=a.total_hours,
+            shift_start=a.shift_start,
+            shift_end=a.shift_end,
+            is_short_shift=a.is_short_shift,
+            is_locked=a.is_locked,
+        ))
+
+    # Get current summary for this date
+    existing_summary = await DailySummaryDoc.find_one(
+        {"store_name": store_name, "date": date_str}
+    )
+
+    if not existing_summary:
+        return  # No summary to update
+
+    # Get staffing requirements and recalculate
+    staffing_reqs = await get_staffing_requirements()
+    current_summaries = [
+        DayScheduleSummary(
+            day_of_week=existing_summary.day_of_week,
+            date=existing_summary.date,
+            total_cost=existing_summary.total_cost,
+            employees_scheduled=existing_summary.employees_scheduled,
+            total_labor_hours=existing_summary.total_labor_hours,
+            dummy_worker_cost=existing_summary.dummy_worker_cost,
+            unfilled_periods=[
+                UnfilledPeriod(
+                    period_index=u.period_index,
+                    start_time=u.start_time,
+                    end_time=u.end_time,
+                    workers_needed=u.workers_needed,
+                )
+                for u in existing_summary.unfilled_periods
+            ],
+        )
+    ]
+
+    updated_summaries, _, _, _ = await recalculate_schedule_costs(
+        schedules, current_summaries, staffing_reqs
+    )
+
+    if updated_summaries:
+        updated = updated_summaries[0]
+        unfilled = [
+            UnfilledPeriodEmbed(
+                period_index=u.period_index,
+                start_time=u.start_time,
+                end_time=u.end_time,
+                workers_needed=u.workers_needed,
+            )
+            for u in updated.unfilled_periods
+        ]
+        await existing_summary.set({
+            "total_cost": updated.total_cost,
+            "employees_scheduled": updated.employees_scheduled,
+            "total_labor_hours": updated.total_labor_hours,
+            "dummy_worker_cost": updated.dummy_worker_cost,
+            "unfilled_periods": unfilled,
+            "updated_at": utc_now(),
+        })
+
+
+@app.patch("/assignments/{assignment_id}", response_model=AssignmentUpdateResponse)
+async def update_assignment_direct(assignment_id: str, request: AssignmentUpdateRequest):
+    """
+    Update a single assignment directly in the new collection.
+    Logs the edit to the audit trail and recalculates daily summary.
+    """
+    # Validate ObjectId format (400 for invalid format)
+    obj_id = _validate_object_id(assignment_id)
+
+    # Try to get the assignment (404 if not found)
+    assignment = await AssignmentDoc.get(obj_id)
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    # Capture previous state for audit
+    previous_values = {
+        "shift_start": assignment.shift_start,
+        "shift_end": assignment.shift_end,
+        "total_hours": assignment.total_hours,
+        "is_locked": assignment.is_locked,
+    }
+
+    updates = {"updated_at": utc_now(), "source": "manual"}
+
+    # Handle lock toggle
+    if request.is_locked is not None:
+        updates["is_locked"] = request.is_locked
+        # Update periods' is_locked status
+        for period in assignment.periods:
+            if period.scheduled:
+                period.is_locked = request.is_locked
+        updates["periods"] = assignment.periods
+
+        # Determine edit type
+        edit_type = "lock" if request.is_locked else "unlock"
+    else:
+        edit_type = "update"
+
+    # Handle shift time updates
+    if request.shift_start is not None or request.shift_end is not None:
+        # Validate that we have valid times to work with
+        new_start = request.shift_start if request.shift_start is not None else assignment.shift_start
+        new_end = request.shift_end if request.shift_end is not None else assignment.shift_end
+
+        if new_start is None or new_end is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot update shift times: both start and end times must be set. "
+                       "Provide both shift_start and shift_end, or ensure existing values are set."
+            )
+
+        config = await get_solver_config()
+
+        # Convert to schema for update_assignment_times
+        periods = [
+            ShiftPeriod(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+                is_locked=p.is_locked,
+                is_break=p.is_break,
+            )
+            for p in assignment.periods
+        ]
+        schedule = EmployeeDaySchedule(
+            employee_name=assignment.employee_name,
+            day_of_week=assignment.day_of_week,
+            date=assignment.date,
+            periods=periods,
+            total_hours=assignment.total_hours,
+            shift_start=assignment.shift_start,
+            shift_end=assignment.shift_end,
+            is_short_shift=assignment.is_short_shift,
+            is_locked=assignment.is_locked,
+        )
+
+        updated_schedule = update_assignment_times(schedule, new_start, new_end, config)
+
+        # Convert back to embedded periods
+        updated_periods = [
+            ShiftPeriodEmbed(
+                period_index=p.period_index,
+                start_time=p.start_time,
+                end_time=p.end_time,
+                scheduled=p.scheduled,
+                is_locked=p.is_locked,
+                is_break=p.is_break,
+            )
+            for p in updated_schedule.periods
+        ]
+
+        updates["shift_start"] = updated_schedule.shift_start
+        updates["shift_end"] = updated_schedule.shift_end
+        updates["total_hours"] = updated_schedule.total_hours
+        updates["is_short_shift"] = updated_schedule.is_short_shift
+        updates["periods"] = updated_periods
+
+    await assignment.set(updates)
+
+    # Create audit log
+    new_values = {
+        "shift_start": updates.get("shift_start", assignment.shift_start),
+        "shift_end": updates.get("shift_end", assignment.shift_end),
+        "total_hours": updates.get("total_hours", assignment.total_hours),
+        "is_locked": updates.get("is_locked", assignment.is_locked),
+    }
+
+    audit = AssignmentEditDoc(
+        assignment_id=assignment_id,
+        employee_name=assignment.employee_name,
+        date=assignment.date,
+        store_name=assignment.store_name,
+        edit_type=edit_type,
+        previous_values=previous_values,
+        new_values=new_values,
+    )
+    await audit.insert()
+
+    # Recalculate daily summary if shift times changed
+    if request.shift_start is not None or request.shift_end is not None:
+        await _recalculate_daily_summary(assignment.store_name, assignment.date)
+
+    # Reload and return
+    assignment = await AssignmentDoc.get(obj_id)
+    return AssignmentUpdateResponse(
+        success=True,
+        assignment=_assignment_to_response(assignment),
+    )
+
+
+@app.delete("/assignments/{assignment_id}", response_model=AssignmentDeleteResponse)
+async def delete_assignment_direct(assignment_id: str):
+    """
+    Delete a single assignment from the new collection.
+    Logs the deletion to the audit trail and recalculates daily summary.
+    """
+    # Validate ObjectId format (400 for invalid format)
+    obj_id = _validate_object_id(assignment_id)
+
+    # Try to get the assignment (404 if not found)
+    assignment = await AssignmentDoc.get(obj_id)
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    if assignment.is_locked:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete a locked assignment. Unlock it first."
+        )
+
+    # Store info for recalculation before deletion
+    store_name = assignment.store_name
+    date_str = assignment.date
+
+    # Capture state for audit
+    previous_values = {
+        "shift_start": assignment.shift_start,
+        "shift_end": assignment.shift_end,
+        "total_hours": assignment.total_hours,
+        "is_locked": assignment.is_locked,
+        "periods": [
+            {
+                "period_index": p.period_index,
+                "scheduled": p.scheduled,
+            }
+            for p in assignment.periods if p.scheduled
+        ],
+    }
+
+    # Create audit log before deletion
+    audit = AssignmentEditDoc(
+        assignment_id=assignment_id,
+        employee_name=assignment.employee_name,
+        date=assignment.date,
+        store_name=assignment.store_name,
+        edit_type="delete",
+        previous_values=previous_values,
+        new_values=None,
+    )
+    await audit.insert()
+
+    # Delete the assignment
+    await assignment.delete()
+
+    # Recalculate daily summary after deletion
+    await _recalculate_daily_summary(store_name, date_str)
+
+    return AssignmentDeleteResponse(success=True, deleted_id=assignment_id)
+
+
+@app.get("/assignment-edits", response_model=AssignmentEditListResponse)
+async def get_assignment_edits(
+    store_name: str | None = None,
+    employee_name: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    """
+    Get audit trail of assignment edits.
+    Supports pagination via limit and offset.
+    """
+    # Validate date formats
+    if start_date:
+        _validate_date(start_date, "start_date")
+    if end_date:
+        _validate_date(end_date, "end_date")
+
+    query = {}
+
+    if store_name:
+        query["store_name"] = store_name
+
+    if employee_name:
+        query["employee_name"] = employee_name
+
+    if start_date and end_date:
+        query["date"] = {"$gte": start_date, "$lte": end_date}
+    elif start_date:
+        query["date"] = {"$gte": start_date}
+    elif end_date:
+        query["date"] = {"$lte": end_date}
+
+    # Get total count for pagination
+    total = await AssignmentEditDoc.find(query).count()
+
+    # Get paginated results
+    edits = await AssignmentEditDoc.find(query).sort(
+        [("edited_at", -1)]
+    ).skip(offset).limit(limit).to_list()
+
+    items = [
+        AssignmentEditResponse(
+            id=str(e.id),
+            assignment_id=e.assignment_id,
+            employee_name=e.employee_name,
+            date=e.date,
+            store_name=e.store_name,
+            edit_type=e.edit_type,
+            previous_values=e.previous_values,
+            new_values=e.new_values,
+            edited_at=e.edited_at.isoformat(),
+            edited_by=e.edited_by,
+        )
+        for e in edits
+    ]
+
+    return AssignmentEditListResponse(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.get("/logs")
@@ -628,7 +1658,7 @@ async def update_employee_availability(employee_name: str, request: EmployeeAvai
 
     await employee.set({
         "availability": availability,
-        "updated_at": datetime.utcnow(),
+        "updated_at": utc_now(),
     })
 
     return {"success": True, "employee_name": employee_name}
@@ -767,7 +1797,7 @@ async def update_config(
         updates["solver_type"] = solver_type
 
     if updates:
-        updates["updated_at"] = datetime.utcnow()
+        updates["updated_at"] = utc_now()
         if config.id:
             await config.set(updates)
         else:
@@ -788,7 +1818,6 @@ async def update_config(
 @app.post("/schedule/{schedule_id}/validate", response_model=ValidateChangeResponse)
 async def validate_change(schedule_id: str, request: ValidateChangeRequest):
     from beanie import PydanticObjectId
-    from schemas import EmployeeDaySchedule as EDS, ShiftPeriod as SP
 
     try:
         schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
@@ -798,33 +1827,15 @@ async def validate_change(schedule_id: str, request: ValidateChangeRequest):
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    # Convert assignments to EmployeeDaySchedule for validation
-    current_schedules = []
-    for assignment in schedule_run.assignments:
-        periods = [
-            SP(
-                period_index=p.period_index,
-                start_time=p.start_time,
-                end_time=p.end_time,
-                scheduled=p.scheduled,
-                is_locked=getattr(p, 'is_locked', False),
-                is_break=getattr(p, 'is_break', False),
-            )
-            for p in assignment.periods
-        ]
-        current_schedules.append(
-            EDS(
-                employee_name=assignment.employee_name,
-                day_of_week=assignment.day_of_week,
-                date=assignment.date,
-                periods=periods,
-                total_hours=assignment.total_hours,
-                shift_start=assignment.shift_start,
-                shift_end=assignment.shift_end,
-                is_short_shift=assignment.is_short_shift,
-                is_locked=getattr(assignment, 'is_locked', False),
-            )
-        )
+    # Load schedules from separate collections
+    start_date = schedule_run.start_date.strftime("%Y-%m-%d") if schedule_run.start_date else None
+    end_date = schedule_run.end_date.strftime("%Y-%m-%d") if schedule_run.end_date else None
+    if not start_date or not end_date:
+        raise HTTPException(status_code=400, detail="Schedule has no date range")
+
+    current_schedules, _ = await _load_current_schedules(
+        schedule_run.store_name, start_date, end_date
+    )
 
     is_valid, errors, warnings = await validate_schedule_change(
         employee_name=request.employee_name,
@@ -844,7 +1855,6 @@ async def validate_change(schedule_id: str, request: ValidateChangeRequest):
 @app.patch("/schedule/{schedule_id}/assignment", response_model=ShiftUpdateResponse)
 async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
     from beanie import PydanticObjectId
-    from schemas import EmployeeDaySchedule as EDS, ShiftPeriod as SP, DayScheduleSummary as DSS, UnfilledPeriod as UP
 
     try:
         schedule_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
@@ -854,57 +1864,15 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    # Convert assignments to EmployeeDaySchedule
-    current_schedules = []
-    for assignment in schedule_run.assignments:
-        periods = [
-            SP(
-                period_index=p.period_index,
-                start_time=p.start_time,
-                end_time=p.end_time,
-                scheduled=p.scheduled,
-                is_locked=getattr(p, 'is_locked', False),
-                is_break=getattr(p, 'is_break', False),
-            )
-            for p in assignment.periods
-        ]
-        current_schedules.append(
-            EDS(
-                employee_name=assignment.employee_name,
-                day_of_week=assignment.day_of_week,
-                date=assignment.date,
-                periods=periods,
-                total_hours=assignment.total_hours,
-                shift_start=assignment.shift_start,
-                shift_end=assignment.shift_end,
-                is_short_shift=assignment.is_short_shift,
-                is_locked=getattr(assignment, 'is_locked', False),
-            )
-        )
+    # Load schedules from separate collections
+    start_date = schedule_run.start_date.strftime("%Y-%m-%d") if schedule_run.start_date else None
+    end_date = schedule_run.end_date.strftime("%Y-%m-%d") if schedule_run.end_date else None
+    if not start_date or not end_date:
+        raise HTTPException(status_code=400, detail="Schedule has no date range")
 
-    # Convert daily summaries
-    current_summaries = []
-    for summary in schedule_run.daily_summaries:
-        unfilled = [
-            UP(
-                period_index=u.period_index,
-                start_time=u.start_time,
-                end_time=u.end_time,
-                workers_needed=u.workers_needed,
-            )
-            for u in summary.unfilled_periods
-        ]
-        current_summaries.append(
-            DSS(
-                day_of_week=summary.day_of_week,
-                date=getattr(summary, 'date', None),
-                total_cost=summary.total_cost,
-                employees_scheduled=summary.employees_scheduled,
-                total_labor_hours=summary.total_labor_hours,
-                dummy_worker_cost=summary.dummy_worker_cost,
-                unfilled_periods=unfilled,
-            )
-        )
+    current_schedules, current_summaries = await _load_current_schedules(
+        schedule_run.store_name, start_date, end_date
+    )
 
     target_employee = request.new_employee_name or request.employee_name
     is_valid, errors, _ = await validate_schedule_change(
@@ -995,9 +1963,12 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
         updated_schedules, current_summaries, staffing_reqs
     )
 
-    # Update database
-    updated_assignments = []
+    # Save to separate collections
+    store_name = schedule_run.store_name
     for schedule in updated_schedules:
+        if not schedule.date:
+            continue
+
         periods = [
             ShiftPeriodEmbed(
                 period_index=p.period_index,
@@ -1009,59 +1980,95 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
             )
             for p in schedule.periods
         ]
-        updated_assignments.append(
-            Assignment(
-                employee_name=schedule.employee_name,
-                day_of_week=schedule.day_of_week,
-                date=schedule.date,
-                total_hours=schedule.total_hours,
-                shift_start=schedule.shift_start,
-                shift_end=schedule.shift_end,
-                is_short_shift=schedule.is_short_shift,
-                is_locked=getattr(schedule, 'is_locked', False),
-                periods=periods,
-            )
-        )
 
-    updated_daily_summaries = []
-    for summary in updated_summaries:
-        unfilled = [
-            UnfilledPeriodEmbed(
-                period_index=u.period_index,
-                start_time=u.start_time,
-                end_time=u.end_time,
-                workers_needed=u.workers_needed,
-            )
-            for u in summary.unfilled_periods
-        ]
-        updated_daily_summaries.append(
-            DailySummary(
-                day_of_week=summary.day_of_week,
-                date=summary.date,
-                total_cost=summary.total_cost,
-                employees_scheduled=summary.employees_scheduled,
-                total_labor_hours=summary.total_labor_hours,
-                dummy_worker_cost=summary.dummy_worker_cost,
-                unfilled_periods=unfilled,
-            )
-        )
+        # Check if this schedule was modified
+        was_original = schedule.employee_name == request.employee_name and schedule.date == request.date
+        was_target = request.new_employee_name and schedule.employee_name == request.new_employee_name
 
-    # Save to database
-    has_warnings = total_dummy > 0 or total_short_shift > 0
-    await schedule_run.set({
-        "assignments": updated_assignments,
-        "daily_summaries": updated_daily_summaries,
-        "total_weekly_cost": total_cost,
-        "total_dummy_worker_cost": total_dummy,
-        "total_short_shift_penalty": total_short_shift,
-        "has_warnings": has_warnings,
-        "is_edited": True,
-        "last_edited_at": datetime.utcnow(),
-    })
+        if was_original or was_target:
+            existing = await AssignmentDoc.find_one(
+                AssignmentDoc.employee_name == schedule.employee_name,
+                AssignmentDoc.date == schedule.date,
+                AssignmentDoc.store_name == store_name,
+            )
+
+            if existing:
+                # Capture previous state for audit
+                previous_values = {
+                    "shift_start": existing.shift_start,
+                    "shift_end": existing.shift_end,
+                    "total_hours": existing.total_hours,
+                }
+
+                await existing.set({
+                    "day_of_week": schedule.day_of_week,
+                    "shift_start": schedule.shift_start,
+                    "shift_end": schedule.shift_end,
+                    "total_hours": schedule.total_hours,
+                    "is_short_shift": schedule.is_short_shift,
+                    "is_locked": getattr(schedule, 'is_locked', False),
+                    "source": "manual",
+                    "periods": periods,
+                    "updated_at": utc_now(),
+                })
+
+                # Create audit log
+                new_values = {
+                    "shift_start": schedule.shift_start,
+                    "shift_end": schedule.shift_end,
+                    "total_hours": schedule.total_hours,
+                }
+                audit = AssignmentEditDoc(
+                    assignment_id=str(existing.id),
+                    employee_name=schedule.employee_name,
+                    date=schedule.date,
+                    store_name=store_name,
+                    edit_type="update",
+                    previous_values=previous_values,
+                    new_values=new_values,
+                )
+                await audit.insert()
+            else:
+                # Create new assignment
+                new_assignment = AssignmentDoc(
+                    employee_name=schedule.employee_name,
+                    date=schedule.date,
+                    day_of_week=schedule.day_of_week,
+                    store_name=store_name,
+                    shift_start=schedule.shift_start,
+                    shift_end=schedule.shift_end,
+                    total_hours=schedule.total_hours,
+                    is_short_shift=schedule.is_short_shift,
+                    is_locked=getattr(schedule, 'is_locked', False),
+                    source="manual",
+                    periods=periods,
+                )
+                await new_assignment.insert()
+
+                # Create audit log
+                audit = AssignmentEditDoc(
+                    assignment_id=str(new_assignment.id),
+                    employee_name=schedule.employee_name,
+                    date=schedule.date,
+                    store_name=store_name,
+                    edit_type="create",
+                    previous_values=None,
+                    new_values={
+                        "shift_start": schedule.shift_start,
+                        "shift_end": schedule.shift_end,
+                        "total_hours": schedule.total_hours,
+                    },
+                )
+                await audit.insert()
+
+    await _save_updated_schedules(
+        store_name, updated_schedules, updated_summaries,
+        schedule_run, total_cost, total_dummy, total_short_shift
+    )
 
     # Return updated result
     updated_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
-    result = _schedule_run_to_result(updated_run)
+    result = await _schedule_run_to_result(updated_run)
 
     return ShiftUpdateResponse(
         success=True,
@@ -1099,7 +2106,7 @@ async def batch_update_assignments(schedule_id: str, request: BatchUpdateRequest
 
     if current_result is None:
         # All updates failed, return current state
-        result = _schedule_run_to_result(schedule_run)
+        result = await _schedule_run_to_result(schedule_run)
         return BatchUpdateResponse(
             success=False,
             updated_schedule=result,
@@ -1127,32 +2134,53 @@ async def toggle_shift_lock(schedule_id: str, request: ToggleLockRequest):
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    assignment_found = False
-    for assignment in schedule_run.assignments:
-        if assignment.employee_name == request.employee_name and assignment.date == request.date:
-            assignment.is_locked = request.is_locked
-            # Also update periods' is_locked status for scheduled periods
-            for period in assignment.periods:
-                if period.scheduled:
-                    period.is_locked = request.is_locked
-            assignment_found = True
-            break
+    # Find assignment in separate collection
+    store_name = schedule_run.store_name
+    existing_assignment = await AssignmentDoc.find_one(
+        AssignmentDoc.employee_name == request.employee_name,
+        AssignmentDoc.date == request.date,
+        AssignmentDoc.store_name == store_name,
+    )
 
-    if not assignment_found:
+    if not existing_assignment:
         raise HTTPException(
             status_code=404,
             detail=f"No assignment found for {request.employee_name} on {request.date}"
         )
 
-    # Save to database
-    await schedule_run.set({
-        "assignments": schedule_run.assignments,
-        "last_edited_at": datetime.utcnow(),
+    # Capture previous state for audit
+    previous_is_locked = existing_assignment.is_locked
+
+    # Update periods' is_locked status
+    for period in existing_assignment.periods:
+        if period.scheduled:
+            period.is_locked = request.is_locked
+
+    await existing_assignment.set({
+        "is_locked": request.is_locked,
+        "periods": existing_assignment.periods,
+        "updated_at": utc_now(),
     })
+
+    # Create audit log
+    edit_type = "lock" if request.is_locked else "unlock"
+    audit = AssignmentEditDoc(
+        assignment_id=str(existing_assignment.id),
+        employee_name=request.employee_name,
+        date=request.date,
+        store_name=store_name,
+        edit_type=edit_type,
+        previous_values={"is_locked": previous_is_locked},
+        new_values={"is_locked": request.is_locked},
+    )
+    await audit.insert()
+
+    # Update ScheduleRunDoc metadata
+    await schedule_run.set({"last_edited_at": utc_now()})
 
     # Return updated result
     updated_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
-    result = _schedule_run_to_result(updated_run)
+    result = await _schedule_run_to_result(updated_run)
 
     return ToggleLockResponse(
         success=True,
@@ -1198,131 +2226,96 @@ async def delete_shift(schedule_id: str, request: DeleteShiftRequest):
     if not schedule_run:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    # Find and clear the assignment
-    assignment_found = False
-    for assignment in schedule_run.assignments:
-        if assignment.employee_name == request.employee_name and assignment.day_of_week == request.day_of_week:
-            if assignment.is_locked:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot delete a locked shift. Unlock it first."
-                )
-            # Clear the shift by setting all periods to not scheduled
-            for period in assignment.periods:
-                period.scheduled = False
-                period.is_locked = False
-            assignment.total_hours = 0
-            assignment.shift_start = None
-            assignment.shift_end = None
-            assignment.is_short_shift = False
-            assignment.is_locked = False
-            assignment_found = True
-            break
+    # Load schedules from separate collections
+    store_name = schedule_run.store_name
+    start_date = schedule_run.start_date.strftime("%Y-%m-%d") if schedule_run.start_date else None
+    end_date = schedule_run.end_date.strftime("%Y-%m-%d") if schedule_run.end_date else None
+    if not start_date or not end_date:
+        raise HTTPException(status_code=400, detail="Schedule has no date range")
 
-    if not assignment_found:
+    # Find the assignment to delete
+    existing_assignment = await AssignmentDoc.find_one(
+        AssignmentDoc.employee_name == request.employee_name,
+        AssignmentDoc.day_of_week == request.day_of_week,
+        AssignmentDoc.store_name == store_name,
+        AssignmentDoc.date >= start_date,
+        AssignmentDoc.date <= end_date,
+    )
+
+    if not existing_assignment:
         raise HTTPException(
             status_code=404,
             detail=f"No assignment found for {request.employee_name} on {request.day_of_week}"
         )
 
-    # Recalculate daily summary
-    from cost_calculator import recalculate_schedule_costs
-    from schemas import EmployeeDaySchedule as EDS, ShiftPeriod as SP, DayScheduleSummary as DSS, UnfilledPeriod as UP
-
-    # Convert to schemas for recalculation
-    current_schedules = []
-    for a in schedule_run.assignments:
-        periods = [
-            SP(
-                period_index=p.period_index,
-                start_time=p.start_time,
-                end_time=p.end_time,
-                scheduled=p.scheduled,
-                is_locked=getattr(p, 'is_locked', False),
-                is_break=getattr(p, 'is_break', False),
-            )
-            for p in a.periods
-        ]
-        current_schedules.append(
-            EDS(
-                employee_name=a.employee_name,
-                day_of_week=a.day_of_week,
-                date=getattr(a, 'date', None),
-                periods=periods,
-                total_hours=a.total_hours,
-                shift_start=a.shift_start,
-                shift_end=a.shift_end,
-                is_short_shift=a.is_short_shift,
-                is_locked=getattr(a, 'is_locked', False),
-            )
+    if existing_assignment.is_locked:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete a locked shift. Unlock it first."
         )
 
-    current_summaries = []
-    for summary in schedule_run.daily_summaries:
-        unfilled = [
-            UP(
-                period_index=u.period_index,
-                start_time=u.start_time,
-                end_time=u.end_time,
-                workers_needed=u.workers_needed,
-            )
-            for u in summary.unfilled_periods
-        ]
-        current_summaries.append(
-            DSS(
-                day_of_week=summary.day_of_week,
-                total_cost=summary.total_cost,
-                employees_scheduled=summary.employees_scheduled,
-                total_labor_hours=summary.total_labor_hours,
-                dummy_worker_cost=summary.dummy_worker_cost,
-                unfilled_periods=unfilled,
-            )
-        )
+    # Capture previous state for audit
+    previous_values = {
+        "shift_start": existing_assignment.shift_start,
+        "shift_end": existing_assignment.shift_end,
+        "total_hours": existing_assignment.total_hours,
+    }
+
+    # Clear the assignment
+    cleared_periods = [
+        {
+            "period_index": p.period_index,
+            "start_time": p.start_time,
+            "end_time": p.end_time,
+            "scheduled": False,
+            "is_locked": False,
+            "is_break": False,
+        }
+        for p in existing_assignment.periods
+    ]
+
+    await existing_assignment.set({
+        "shift_start": None,
+        "shift_end": None,
+        "total_hours": 0,
+        "is_short_shift": False,
+        "is_locked": False,
+        "source": "manual",
+        "periods": cleared_periods,
+        "updated_at": utc_now(),
+    })
+
+    # Create audit log
+    audit = AssignmentEditDoc(
+        assignment_id=str(existing_assignment.id),
+        employee_name=request.employee_name,
+        date=existing_assignment.date,
+        store_name=store_name,
+        edit_type="delete",
+        previous_values=previous_values,
+        new_values={"shift_start": None, "shift_end": None, "total_hours": 0},
+    )
+    await audit.insert()
+
+    # Recalculate costs with updated schedules
+    current_schedules, current_summaries = await _load_current_schedules(
+        store_name, start_date, end_date
+    )
 
     staffing_reqs = await get_staffing_requirements()
     updated_summaries, total_cost, total_dummy, total_short_shift = await recalculate_schedule_costs(
         current_schedules, current_summaries, staffing_reqs
     )
 
-    # Update database
-    updated_daily_summaries = []
-    for summary in updated_summaries:
-        unfilled = [
-            UnfilledPeriodEmbed(
-                period_index=u.period_index,
-                start_time=u.start_time,
-                end_time=u.end_time,
-                workers_needed=u.workers_needed,
-            )
-            for u in summary.unfilled_periods
-        ]
-        updated_daily_summaries.append(
-            DailySummary(
-                day_of_week=summary.day_of_week,
-                date=summary.date,
-                total_cost=summary.total_cost,
-                employees_scheduled=summary.employees_scheduled,
-                total_labor_hours=summary.total_labor_hours,
-                dummy_worker_cost=summary.dummy_worker_cost,
-                unfilled_periods=unfilled,
-            )
-        )
-
-    has_warnings = total_dummy > 0 or total_short_shift > 0
-    await schedule_run.set({
-        "assignments": schedule_run.assignments,
-        "daily_summaries": updated_daily_summaries,
-        "total_weekly_cost": total_cost,
-        "total_dummy_worker_cost": total_dummy,
-        "total_short_shift_penalty": total_short_shift,
-        "has_warnings": has_warnings,
-        "is_edited": True,
-        "last_edited_at": datetime.utcnow(),
-    })
+    # Save updated summaries and metadata
+    await _save_updated_schedules(
+        store_name, current_schedules, updated_summaries,
+        schedule_run, total_cost, total_dummy, total_short_shift
+    )
 
     # Return updated result
     updated_run = await ScheduleRunDoc.get(PydanticObjectId(schedule_id))
-    result = _schedule_run_to_result(updated_run)
+    result = await _schedule_run_to_result(updated_run)
 
     return DeleteShiftResponse(
         success=True,
@@ -1352,7 +2345,7 @@ async def update_store(store_name: str, request: StoreUpdateRequest):
         return {"success": True, "store_name": new_name}
 
     # Update existing store
-    updates = {"updated_at": datetime.utcnow(), "hours": hours}
+    updates = {"updated_at": utc_now(), "hours": hours}
     if request.store_name and request.store_name != store_name:
         existing = await StoreDoc.find_one(StoreDoc.store_name == request.store_name)
         if existing:
@@ -1438,7 +2431,7 @@ async def update_store_staffing(store_name: str, request: StaffingRequirementsUp
         for r in request.requirements
     ]
 
-    await store.set({"staffing_requirements": requirements, "updated_at": datetime.utcnow()})
+    await store.set({"staffing_requirements": requirements, "updated_at": utc_now()})
     return {"success": True, "store_name": store_name}
 
 
@@ -1568,7 +2561,7 @@ async def create_or_update_compliance_rule(jurisdiction: str, request: Complianc
             "source": request.source,
             "ai_sources": request.ai_sources,
             "notes": request.notes,
-            "updated_at": datetime.utcnow(),
+            "updated_at": utc_now(),
         })
     else:
         rule = ComplianceRuleDoc(
@@ -1786,7 +2779,7 @@ async def approve_ai_suggestion(request: ApproveAISuggestionRequest, req: Reques
         "source": "AI_SUGGESTED" if request.original_suggestion else "MANUAL",
         "ai_sources": request.sources,
         "notes": request.notes,
-        "updated_at": datetime.utcnow(),
+        "updated_at": utc_now(),
     }
 
     if rule:
@@ -1924,7 +2917,7 @@ async def update_employee_compliance(employee_name: str, request: EmployeeCompli
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    updates = {"updated_at": datetime.utcnow()}
+    updates = {"updated_at": utc_now()}
 
     if request.date_of_birth is not None:
         if request.date_of_birth:
@@ -1979,7 +2972,7 @@ async def update_compliance_config(request: ComplianceConfigUpdate):
     if not config:
         config = ConfigDoc()
 
-    updates = {"updated_at": datetime.utcnow()}
+    updates = {"updated_at": utc_now()}
 
     if request.compliance_mode is not None:
         if request.compliance_mode not in ["off", "warn", "enforce"]:
@@ -2018,5 +3011,5 @@ async def update_store_jurisdiction(store_name: str, jurisdiction: str):
     if jurisdiction != "DEFAULT" and jurisdiction not in US_STATES:
         raise HTTPException(status_code=400, detail=f"Invalid jurisdiction: {jurisdiction}")
 
-    await store.set({"jurisdiction": jurisdiction, "updated_at": datetime.utcnow()})
+    await store.set({"jurisdiction": jurisdiction, "updated_at": utc_now()})
     return {"success": True, "store_name": store_name, "jurisdiction": jurisdiction}

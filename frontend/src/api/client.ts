@@ -257,6 +257,90 @@ export const api = {
       `/stores/${encodeURIComponent(storeName)}/jurisdiction?jurisdiction=${jurisdiction}`,
       { method: "PUT" }
     ),
+
+  // New Assignments API (separate collection)
+  getAssignments: (params?: {
+    store_name?: string;
+    start_date?: string;
+    end_date?: string;
+    employee_name?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.store_name) searchParams.set("store_name", params.store_name);
+    if (params?.start_date) searchParams.set("start_date", params.start_date);
+    if (params?.end_date) searchParams.set("end_date", params.end_date);
+    if (params?.employee_name) searchParams.set("employee_name", params.employee_name);
+    if (params?.limit) searchParams.set("limit", params.limit.toString());
+    if (params?.offset) searchParams.set("offset", params.offset.toString());
+    const query = searchParams.toString();
+    return fetchApi<AssignmentListResponse>(`/assignments${query ? `?${query}` : ""}`);
+  },
+
+  getDailySummaries: (params?: {
+    store_name?: string;
+    start_date?: string;
+    end_date?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.store_name) searchParams.set("store_name", params.store_name);
+    if (params?.start_date) searchParams.set("start_date", params.start_date);
+    if (params?.end_date) searchParams.set("end_date", params.end_date);
+    if (params?.limit) searchParams.set("limit", params.limit.toString());
+    if (params?.offset) searchParams.set("offset", params.offset.toString());
+    const query = searchParams.toString();
+    return fetchApi<DailySummaryListResponse>(`/daily-summaries${query ? `?${query}` : ""}`);
+  },
+
+  getScheduleCurrent: (params?: {
+    store_name?: string;
+    start_date?: string;
+    end_date?: string;
+  }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.store_name) searchParams.set("store_name", params.store_name);
+    if (params?.start_date) searchParams.set("start_date", params.start_date);
+    if (params?.end_date) searchParams.set("end_date", params.end_date);
+    const query = searchParams.toString();
+    return fetchApi<WeeklyScheduleResult | null>(`/schedule/current${query ? `?${query}` : ""}`);
+  },
+
+  updateAssignmentDirect: (assignmentId: string, data: {
+    shift_start?: string;
+    shift_end?: string;
+    is_locked?: boolean;
+  }) =>
+    fetchApi<{ success: boolean; assignment: Assignment }>(`/assignments/${assignmentId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  deleteAssignmentDirect: (assignmentId: string) =>
+    fetchApi<{ success: boolean; deleted_id: string }>(`/assignments/${assignmentId}`, {
+      method: "DELETE",
+    }),
+
+  getAssignmentEdits: (params?: {
+    store_name?: string;
+    employee_name?: string;
+    start_date?: string;
+    end_date?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.store_name) searchParams.set("store_name", params.store_name);
+    if (params?.employee_name) searchParams.set("employee_name", params.employee_name);
+    if (params?.start_date) searchParams.set("start_date", params.start_date);
+    if (params?.end_date) searchParams.set("end_date", params.end_date);
+    if (params?.limit) searchParams.set("limit", params.limit.toString());
+    if (params?.offset) searchParams.set("offset", params.offset.toString());
+    const query = searchParams.toString();
+    return fetchApi<AssignmentEditListResponse>(`/assignment-edits${query ? `?${query}` : ""}`);
+  },
 };
 
 export interface AvailabilitySlot {
@@ -443,3 +527,79 @@ export interface ComplianceAuditRecord {
   ip_address?: string;
   user_agent?: string;
 }
+
+// New Assignments API Types (separate collection)
+export interface ShiftPeriod {
+  period_index: number;
+  start_time: string;
+  end_time: string;
+  scheduled: boolean;
+  is_locked: boolean;
+  is_break: boolean;
+}
+
+export interface Assignment {
+  id: string;
+  employee_name: string;
+  date: string;
+  day_of_week: string;
+  store_name: string;
+  shift_start: string | null;
+  shift_end: string | null;
+  total_hours: number;
+  is_short_shift: boolean;
+  is_locked: boolean;
+  source: "solver" | "manual";
+  periods: ShiftPeriod[];
+  created_at: string;
+  updated_at: string;
+  solver_run_id: string | null;
+}
+
+export interface UnfilledPeriod {
+  period_index: number;
+  start_time: string;
+  end_time: string;
+  workers_needed: number;
+}
+
+export interface DailySummary {
+  id: string;
+  store_name: string;
+  date: string;
+  day_of_week: string;
+  total_cost: number;
+  employees_scheduled: number;
+  total_labor_hours: number;
+  dummy_worker_cost: number;
+  short_shift_penalty: number;
+  unfilled_periods: UnfilledPeriod[];
+  compliance_violations: ComplianceViolation[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssignmentEdit {
+  id: string;
+  assignment_id: string | null;
+  employee_name: string;
+  date: string;
+  store_name: string;
+  edit_type: "create" | "update" | "delete" | "lock" | "unlock";
+  previous_values: Record<string, unknown> | null;
+  new_values: Record<string, unknown> | null;
+  edited_at: string;
+  edited_by: string | null;
+}
+
+// Paginated response types
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export type AssignmentListResponse = PaginatedResponse<Assignment>;
+export type DailySummaryListResponse = PaginatedResponse<DailySummary>;
+export type AssignmentEditListResponse = PaginatedResponse<AssignmentEdit>;

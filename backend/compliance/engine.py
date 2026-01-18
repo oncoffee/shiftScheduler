@@ -215,11 +215,23 @@ async def validate_schedule_compliance(
         for e in employees
     ]
 
-    # Build assignments
-    assignments = [a.model_dump() for a in schedule_run.assignments]
+    from db import AssignmentDoc
+
+    if schedule_run.start_date and schedule_run.end_date:
+        start_date_str = schedule_run.start_date.strftime("%Y-%m-%d")
+        end_date_str = schedule_run.end_date.strftime("%Y-%m-%d")
+        assignment_docs = await AssignmentDoc.find(
+            AssignmentDoc.store_name == schedule_run.store_name,
+            AssignmentDoc.date >= start_date_str,
+            AssignmentDoc.date <= end_date_str,
+        ).to_list()
+    else:
+        assignment_docs = await AssignmentDoc.find(
+            AssignmentDoc.store_name == schedule_run.store_name,
+        ).to_list()
+
+    assignments = [a.model_dump() for a in assignment_docs]
     previous_assignments = []
-    if previous_schedule_run:
-        previous_assignments = [a.model_dump() for a in previous_schedule_run.assignments]
 
     # Build context
     context = ComplianceEngine.build_context(

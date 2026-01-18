@@ -13,6 +13,10 @@ from .models import (
     ComplianceRuleDoc,
     ComplianceViolation,
     ComplianceRuleSuggestion,
+    # New separate assignment collections
+    AssignmentDoc,
+    DailySummaryDoc,
+    AssignmentEditDoc,
 )
 from .sync import sync_all_from_sheets
 
@@ -33,4 +37,8 @@ __all__ = [
     "ComplianceViolation",
     "ComplianceRuleSuggestion",
     "sync_all_from_sheets",
+    # New separate assignment collections
+    "AssignmentDoc",
+    "DailySummaryDoc",
+    "AssignmentEditDoc",
 ]
