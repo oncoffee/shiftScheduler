@@ -292,6 +292,8 @@ def update_assignment_times(
             start_time=period.start_time,
             end_time=period.end_time,
             scheduled=scheduled,
+            is_locked=getattr(period, 'is_locked', False),
+            is_break=getattr(period, 'is_break', False),
         ))
 
     scheduled_count = sum(1 for p in updated_periods if p.scheduled)
@@ -308,4 +310,5 @@ def update_assignment_times(
         shift_start=new_start if total_hours > 0 else None,
         shift_end=new_end if total_hours > 0 else None,
         is_short_shift=is_short_shift,
+        is_locked=getattr(schedule, 'is_locked', False),
     )
