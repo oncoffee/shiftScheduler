@@ -8,17 +8,81 @@ import type {
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
+// Token refresh helper
+async function refreshAccessToken(): Promise<boolean> {
+  const refreshToken = localStorage.getItem("refresh_token");
+  if (!refreshToken) return false;
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+
+    if (!response.ok) return false;
+
+    const data = await response.json();
+    localStorage.setItem("access_token", data.access_token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function fetchApi<T>(
   endpoint: string,
-  options?: RequestInit
+  options?: RequestInit & { skipAuth?: boolean }
 ): Promise<T> {
+  const token = localStorage.getItem("access_token");
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...options?.headers as Record<string, string>,
+  };
+
+  // Add auth header if token exists and skipAuth is not set
+  if (token && !options?.skipAuth) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
+    headers,
   });
+
+  // Handle 401 - try to refresh token
+  if (response.status === 401 && token && !options?.skipAuth) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      // Retry the request with new token
+      const newToken = localStorage.getItem("access_token");
+      headers["Authorization"] = `Bearer ${newToken}`;
+      const retryResponse = await fetch(`${API_BASE_URL}${endpoint}`, {
+        ...options,
+        headers,
+      });
+
+      if (!retryResponse.ok) {
+        // Token refresh didn't help, redirect to login
+        if (retryResponse.status === 401) {
+          localStorage.removeItem("access_token");
+          localStorage.removeItem("refresh_token");
+          window.location.href = "/login";
+        }
+        throw new Error(`API Error: ${retryResponse.status} ${retryResponse.statusText}`);
+      }
+
+      const text = await retryResponse.text();
+      return (text ? JSON.parse(text) : text) as T;
+    } else {
+      // Refresh failed, redirect to login
+      localStorage.removeItem("access_token");
+      localStorage.removeItem("refresh_token");
+      window.location.href = "/login";
+      throw new Error("Session expired. Please login again.");
+    }
+  }
 
   if (!response.ok) {
     throw new Error(`API Error: ${response.status} ${response.statusText}`);
@@ -29,11 +93,54 @@ async function fetchApi<T>(
 }
 
 export const api = {
-  syncAll: (passKey: string) =>
-    fetchApi<SyncResult>(`/sync/all?pass_key=${passKey}`, { method: "POST" }),
+  // Auth endpoints
+  getLoginUrl: () =>
+    fetchApi<{ auth_url: string; state: string }>("/auth/login", { skipAuth: true }),
 
-  runSolver: (passKey: string, startDate: string, endDate: string) =>
-    fetchApi<WeeklyScheduleResult>(`/solver/run?pass_key=${passKey}&start_date=${startDate}&end_date=${endDate}`),
+  refreshToken: (refreshToken: string) =>
+    fetchApi<{ access_token: string; token_type: string }>("/auth/refresh", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      skipAuth: true,
+    }),
+
+  logout: () =>
+    fetchApi<{ message: string }>("/auth/logout", { method: "POST" }),
+
+  getCurrentUser: () =>
+    fetchApi<AuthUser>("/auth/me"),
+
+  // Admin - Whitelist management
+  getWhitelist: () =>
+    fetchApi<{ whitelist: WhitelistEntry[] }>("/admin/whitelist"),
+
+  addToWhitelist: (email: string) =>
+    fetchApi<{ message: string; email: string }>("/admin/whitelist", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  removeFromWhitelist: (email: string) =>
+    fetchApi<{ message: string }>(`/admin/whitelist/${encodeURIComponent(email)}`, {
+      method: "DELETE",
+    }),
+
+  // Admin - User management
+  getUsers: () =>
+    fetchApi<{ users: AdminUser[] }>("/admin/users"),
+
+  updateUserRole: (email: string, role: string) =>
+    fetchApi<{ message: string; email: string; role: string }>(
+      `/admin/users/${encodeURIComponent(email)}/role?role=${role}`,
+      { method: "PATCH" }
+    ),
+
+  // Data sync & solver - no longer require passKey
+  syncAll: () =>
+    fetchApi<SyncResult>("/sync/all", { method: "POST" }),
+
+  runSolver: (startDate: string, endDate: string) =>
+    fetchApi<WeeklyScheduleResult>(`/solver/run?start_date=${startDate}&end_date=${endDate}`),
 
   getScheduleResults: () =>
     fetchApi<WeeklyScheduleResult | null>("/schedule/results"),
@@ -603,3 +710,26 @@ export interface PaginatedResponse<T> {
 export type AssignmentListResponse = PaginatedResponse<Assignment>;
 export type DailySummaryListResponse = PaginatedResponse<DailySummary>;
 export type AssignmentEditListResponse = PaginatedResponse<AssignmentEdit>;
+
+// Auth types
+export interface AuthUser {
+  email: string;
+  name: string;
+  picture_url: string | null;
+  role: "admin" | "editor" | "viewer";
+}
+
+export interface WhitelistEntry {
+  email: string;
+  added_by: string | null;
+  created_at: string;
+}
+
+export interface AdminUser {
+  email: string;
+  name: string;
+  picture_url: string | null;
+  role: "admin" | "editor" | "viewer";
+  last_login_at: string | null;
+  created_at: string;
+}

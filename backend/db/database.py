@@ -23,6 +23,8 @@ async def init_db():
         AssignmentDoc,
         DailySummaryDoc,
         AssignmentEditDoc,
+        UserDoc,
+        EmailWhitelistDoc,
     )
 
     _client = AsyncIOMotorClient(MONGODB_URL)
@@ -42,6 +44,9 @@ async def init_db():
             AssignmentDoc,
             DailySummaryDoc,
             AssignmentEditDoc,
+            # Authentication models
+            UserDoc,
+            EmailWhitelistDoc,
         ],
     )
 

@@ -382,3 +382,46 @@ class AssignmentEditDoc(Document):
             IndexModel([("employee_name", 1), ("date", 1)]),
             IndexModel([("store_name", 1), ("date", 1)]),
         ]
+
+
+# ============================================================================
+# Authentication Models (Google SSO)
+# ============================================================================
+
+
+class UserDoc(Document):
+    """User authenticated via Google SSO."""
+    email: Indexed(str, unique=True)
+    google_id: Indexed(str, unique=True)
+    name: str
+    picture_url: Optional[str] = None
+    role: str = "viewer"  # "admin", "editor", "viewer"
+
+    # Token management (refresh token stored as hash)
+    refresh_token_hash: Optional[str] = None
+    refresh_token_expires_at: Optional[datetime] = None
+
+    # Audit
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    last_login_at: Optional[datetime] = None
+
+    class Settings:
+        name = "users"
+        indexes = [
+            IndexModel([("email", 1)], unique=True),
+            IndexModel([("google_id", 1)], unique=True),
+        ]
+
+
+class EmailWhitelistDoc(Document):
+    """Approved emails for SSO access."""
+    email: Indexed(str, unique=True)
+    added_by: Optional[str] = None  # admin email who added this
+    created_at: datetime = Field(default_factory=utc_now)
+
+    class Settings:
+        name = "email_whitelist"
+        indexes = [
+            IndexModel([("email", 1)], unique=True),
+        ]

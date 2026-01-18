@@ -32,7 +32,6 @@ export function Settings() {
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
-  const [passKey, setPassKey] = useState("");
 
   // Compliance state
   const [complianceConfig, setComplianceConfig] = useState<ComplianceConfig | null>(null);
@@ -103,15 +102,11 @@ export function Settings() {
   };
 
   const handleSync = async () => {
-    if (!passKey) {
-      setSyncError("Pass key is required");
-      return;
-    }
     setSyncing(true);
     setSyncError(null);
     setSyncResult(null);
     try {
-      const result = await api.syncAll(passKey);
+      const result = await api.syncAll();
       setSyncResult(result);
       // Reload config after sync
       loadConfig();
@@ -844,26 +839,14 @@ export function Settings() {
             </div>
           )}
 
-          <div className="flex items-end gap-4">
-            <div className="flex-1 space-y-2">
-              <label className="text-sm font-medium">Pass Key</label>
-              <input
-                type="password"
-                value={passKey}
-                onChange={(e) => setPassKey(e.target.value)}
-                placeholder="Enter pass key"
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
-              />
-            </div>
-            <Button onClick={handleSync} disabled={syncing || !passKey}>
-              {syncing ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <RefreshCw className="w-4 h-4 mr-2" />
-              )}
-              Sync from Google Sheets
-            </Button>
-          </div>
+          <Button onClick={handleSync} disabled={syncing}>
+            {syncing ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4 mr-2" />
+            )}
+            Sync from Google Sheets
+          </Button>
         </CardContent>
       </Card>
 

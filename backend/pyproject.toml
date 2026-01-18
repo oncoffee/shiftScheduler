@@ -19,6 +19,9 @@ dependencies = [
     "pulp>=2.8.0",
     "ortools>=9.8.3296",
     "litellm>=1.0.0",
+    "google-auth>=2.47.0",
+    "pyjwt>=2.10.1",
+    "aiohttp>=3.13.3",
 ]
 
 [dependency-groups]

@@ -1,10 +1,14 @@
+import hashlib
 import logging
 import os
 import re
+import secrets
+import urllib.parse
 from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import FastAPI, HTTPException, Request, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from bson import ObjectId
@@ -67,6 +71,23 @@ from db import (
     AssignmentDoc,
     DailySummaryDoc,
     AssignmentEditDoc,
+    # Authentication models
+    UserDoc,
+    EmailWhitelistDoc,
+)
+from auth import (
+    GOOGLE_CLIENT_ID,
+    GOOGLE_REDIRECT_URI,
+    FRONTEND_URL,
+    validate_auth_config,
+    exchange_code_for_tokens,
+    verify_google_id_token,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    get_current_user,
+    require_admin,
+    require_editor_or_admin,
 )
 from db.database import close_db, get_database
 from db.models import StoreHours
@@ -109,6 +130,13 @@ SOLVER_PASS_KEY = os.getenv("SOLVER_PASS_KEY", "changeme")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Validate auth config at startup (will raise if missing required vars)
+    try:
+        validate_auth_config()
+        logger.info("Auth configuration validated successfully")
+    except RuntimeError as e:
+        logger.warning(f"Auth not configured: {e}. Auth endpoints will be disabled.")
+
     await init_db()
     yield
     await close_db()
@@ -140,19 +168,378 @@ app.add_middleware(
 )
 
 
-@app.post("/sync/all")
-async def sync_all(pass_key: str):
-    if pass_key != SOLVER_PASS_KEY:
-        raise HTTPException(status_code=422, detail="Invalid Credentials")
+# ============================================================================
+# OAuth State Storage (In-memory, should be Redis in production)
+# ============================================================================
 
+_oauth_states: dict[str, datetime] = {}
+
+
+def _cleanup_expired_states():
+    """Remove OAuth states older than 10 minutes."""
+    now = datetime.utcnow()
+    expired = [k for k, v in _oauth_states.items() if (now - v).total_seconds() > 600]
+    for k in expired:
+        del _oauth_states[k]
+
+
+# ============================================================================
+# Authentication Endpoints
+# ============================================================================
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+class UserResponse(BaseModel):
+    email: str
+    name: str
+    picture_url: str | None
+    role: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+
+@app.get("/auth/login")
+async def get_login_url(redirect_uri: str = "/"):
+    """
+    Generate Google OAuth login URL.
+
+    Args:
+        redirect_uri: Where to redirect after successful login (frontend path)
+
+    Returns:
+        Dictionary with auth_url to redirect user to
+    """
+    _cleanup_expired_states()
+
+    # Include redirect_uri in state so we can use it after callback
+    state = secrets.token_urlsafe(32)
+    _oauth_states[state] = datetime.utcnow()
+
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+    return {"auth_url": url, "state": state}
+
+
+@app.get("/auth/callback")
+async def oauth_callback(code: str, state: str):
+    """
+    Handle Google OAuth callback.
+
+    This endpoint receives the authorization code from Google,
+    exchanges it for tokens, validates the user, and returns JWT tokens.
+    """
+    # Verify state to prevent CSRF
+    if state not in _oauth_states:
+        raise HTTPException(status_code=400, detail="Invalid or expired state")
+    del _oauth_states[state]
+
+    # Exchange code for tokens
+    tokens = await exchange_code_for_tokens(code)
+    if "error" in tokens:
+        raise HTTPException(
+            status_code=400,
+            detail=tokens.get("error_description", tokens.get("error", "OAuth error")),
+        )
+
+    # Verify ID token and extract user info
+    try:
+        user_info = verify_google_id_token(tokens["id_token"])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid ID token: {e}")
+
+    email = user_info.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="No email in ID token")
+
+    # Check email whitelist
+    whitelist = await EmailWhitelistDoc.find_one(EmailWhitelistDoc.email == email)
+    if not whitelist:
+        # Redirect to frontend with error
+        error_url = f"{FRONTEND_URL}/login?error=unauthorized&email={urllib.parse.quote(email)}"
+        return RedirectResponse(url=error_url)
+
+    # Create or update user
+    user = await UserDoc.find_one(UserDoc.email == email)
+    now = utc_now()
+    if not user:
+        user = UserDoc(
+            email=email,
+            google_id=user_info["sub"],
+            name=user_info.get("name", email),
+            picture_url=user_info.get("picture"),
+            last_login_at=now,
+        )
+        await user.insert()
+    else:
+        user.name = user_info.get("name", email)
+        user.picture_url = user_info.get("picture")
+        user.last_login_at = now
+        user.updated_at = now
+        await user.save()
+
+    # Generate tokens
+    access_token = create_access_token(email, str(user.id), user.role)
+    refresh_token, expires_at = create_refresh_token(email)
+
+    # Store refresh token hash
+    user.refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
+    user.refresh_token_expires_at = expires_at
+    await user.save()
+
+    # Redirect to frontend with tokens in URL fragment
+    # Frontend will extract tokens and store them
+    redirect_url = (
+        f"{FRONTEND_URL}/auth/callback"
+        f"#access_token={access_token}"
+        f"&refresh_token={refresh_token}"
+        f"&token_type=bearer"
+    )
+    return RedirectResponse(url=redirect_url)
+
+
+@app.post("/auth/refresh")
+async def refresh_access_token(request: RefreshTokenRequest):
+    """
+    Refresh access token using refresh token.
+
+    Args:
+        request: Contains the refresh_token
+
+    Returns:
+        New access token
+    """
+    import jwt as pyjwt
+
+    try:
+        payload = decode_token(request.refresh_token)
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+
+        email = payload.get("sub")
+        if not email:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+
+        user = await UserDoc.find_one(UserDoc.email == email)
+        if not user or not user.refresh_token_hash:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+        # Verify refresh token hash
+        token_hash = hashlib.sha256(request.refresh_token.encode()).hexdigest()
+        if token_hash != user.refresh_token_hash:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+        # Generate new access token
+        new_access_token = create_access_token(email, str(user.id), user.role)
+        return {"access_token": new_access_token, "token_type": "bearer"}
+
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    except pyjwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+
+@app.post("/auth/logout")
+async def logout(current_user: UserDoc = Depends(get_current_user)):
+    """
+    Logout - invalidate refresh token.
+
+    Requires authentication.
+    """
+    current_user.refresh_token_hash = None
+    current_user.refresh_token_expires_at = None
+    await current_user.save()
+    return {"message": "Logged out successfully"}
+
+
+@app.get("/auth/me", response_model=UserResponse)
+async def get_current_user_info(current_user: UserDoc = Depends(get_current_user)):
+    """
+    Get current user info.
+
+    Requires authentication.
+    """
+    return UserResponse(
+        email=current_user.email,
+        name=current_user.name,
+        picture_url=current_user.picture_url,
+        role=current_user.role,
+    )
+
+
+# ============================================================================
+# Admin - Email Whitelist Management
+# ============================================================================
+
+
+class WhitelistEntry(BaseModel):
+    email: str
+    added_by: str | None = None
+    created_at: str
+
+
+class WhitelistResponse(BaseModel):
+    whitelist: list[WhitelistEntry]
+
+
+class AddWhitelistRequest(BaseModel):
+    email: str
+
+
+@app.get("/admin/whitelist", response_model=WhitelistResponse)
+async def list_whitelist(admin: UserDoc = Depends(require_admin)):
+    """
+    List all whitelisted emails.
+
+    Requires admin role.
+    """
+    entries = await EmailWhitelistDoc.find_all().to_list()
+    return WhitelistResponse(
+        whitelist=[
+            WhitelistEntry(
+                email=e.email,
+                added_by=e.added_by,
+                created_at=e.created_at.isoformat(),
+            )
+            for e in entries
+        ]
+    )
+
+
+@app.post("/admin/whitelist")
+async def add_to_whitelist(
+    request: AddWhitelistRequest,
+    admin: UserDoc = Depends(require_admin),
+):
+    """
+    Add email to whitelist.
+
+    Requires admin role.
+    """
+    email = request.email.lower().strip()
+    existing = await EmailWhitelistDoc.find_one(EmailWhitelistDoc.email == email)
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already whitelisted")
+
+    entry = EmailWhitelistDoc(email=email, added_by=admin.email)
+    await entry.insert()
+    return {"message": f"Added {email} to whitelist", "email": email}
+
+
+@app.delete("/admin/whitelist/{email}")
+async def remove_from_whitelist(
+    email: str,
+    admin: UserDoc = Depends(require_admin),
+):
+    """
+    Remove email from whitelist.
+
+    Requires admin role. Cannot remove your own email.
+    """
+    email = email.lower().strip()
+    if email == admin.email:
+        raise HTTPException(status_code=400, detail="Cannot remove your own email from whitelist")
+
+    entry = await EmailWhitelistDoc.find_one(EmailWhitelistDoc.email == email)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Email not in whitelist")
+
+    await entry.delete()
+    return {"message": f"Removed {email} from whitelist"}
+
+
+@app.patch("/admin/users/{email}/role")
+async def update_user_role(
+    email: str,
+    role: str,
+    admin: UserDoc = Depends(require_admin),
+):
+    """
+    Update a user's role.
+
+    Requires admin role. Valid roles: admin, editor, viewer
+    """
+    if role not in ("admin", "editor", "viewer"):
+        raise HTTPException(status_code=400, detail="Invalid role. Must be admin, editor, or viewer")
+
+    if email == admin.email:
+        raise HTTPException(status_code=400, detail="Cannot change your own role")
+
+    user = await UserDoc.find_one(UserDoc.email == email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.role = role
+    user.updated_at = utc_now()
+    await user.save()
+    return {"message": f"Updated role for {email} to {role}", "email": email, "role": role}
+
+
+@app.get("/admin/users")
+async def list_users(admin: UserDoc = Depends(require_admin)):
+    """
+    List all users.
+
+    Requires admin role.
+    """
+    users = await UserDoc.find_all().to_list()
+    return {
+        "users": [
+            {
+                "email": u.email,
+                "name": u.name,
+                "picture_url": u.picture_url,
+                "role": u.role,
+                "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+                "created_at": u.created_at.isoformat(),
+            }
+            for u in users
+        ]
+    }
+
+
+# ============================================================================
+# Existing Endpoints (Data Sync, Solver, etc.)
+# ============================================================================
+
+
+@app.post("/sync/all")
+async def sync_all(current_user: UserDoc = Depends(require_editor_or_admin)):
+    """
+    Sync all data from Google Sheets to MongoDB.
+
+    Requires editor or admin role.
+    """
     result = await sync_all_from_sheets()
     return result
 
 
 @app.get("/solver/run", response_model=WeeklyScheduleResult)
-async def run_ep(pass_key: str, start_date: str, end_date: str) -> WeeklyScheduleResult:
-    if pass_key != SOLVER_PASS_KEY:
-        raise HTTPException(status_code=422, detail="Invalid Credentials")
+async def run_ep(
+    start_date: str,
+    end_date: str,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+) -> WeeklyScheduleResult:
+    """
+    Run the Gurobi solver to generate a schedule.
+
+    Requires editor or admin role.
+    """
 
     # Parse date strings
     try:
@@ -512,7 +899,9 @@ async def _run_compliance_validation(schedule_run: ScheduleRunDoc):
 
 
 @app.get("/schedule/results")
-async def get_schedule_results() -> WeeklyScheduleResult | None:
+async def get_schedule_results(
+    current_user: UserDoc = Depends(get_current_user),
+) -> WeeklyScheduleResult | None:
     schedule_run = await ScheduleRunDoc.find_one(ScheduleRunDoc.is_current == True)
 
     if not schedule_run:
@@ -827,7 +1216,11 @@ async def _save_updated_schedules(
 
 
 @app.get("/schedule/history")
-async def get_schedule_history(limit: int = 20, skip: int = 0):
+async def get_schedule_history(
+    limit: int = 20,
+    skip: int = 0,
+    current_user: UserDoc = Depends(get_current_user),
+):
     runs = (
         await ScheduleRunDoc.find()
         .sort(-ScheduleRunDoc.generated_at)
@@ -872,7 +1265,10 @@ async def get_schedule_history(limit: int = 20, skip: int = 0):
 
 
 @app.get("/schedule/{schedule_id}")
-async def get_schedule_by_id(schedule_id: str) -> WeeklyScheduleResult:
+async def get_schedule_by_id(
+    schedule_id: str,
+    current_user: UserDoc = Depends(get_current_user),
+) -> WeeklyScheduleResult:
     from beanie import PydanticObjectId
 
     try:
@@ -967,6 +1363,7 @@ async def get_assignments(
     employee_name: str | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
+    current_user: UserDoc = Depends(get_current_user),
 ):
     """
     Query assignments from the new separate collection.
@@ -1018,6 +1415,7 @@ async def get_daily_summaries(
     end_date: str | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
+    current_user: UserDoc = Depends(get_current_user),
 ):
     """
     Query daily summaries from the new separate collection.
@@ -1062,6 +1460,7 @@ async def get_schedule_current(
     store_name: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    current_user: UserDoc = Depends(get_current_user),
 ) -> WeeklyScheduleResult | None:
     """
     Assemble WeeklyScheduleResult from the new separate collections.
@@ -1303,9 +1702,13 @@ async def _recalculate_daily_summary(store_name: str, date_str: str) -> None:
 
 
 @app.patch("/assignments/{assignment_id}", response_model=AssignmentUpdateResponse)
-async def update_assignment_direct(assignment_id: str, request: AssignmentUpdateRequest):
+async def update_assignment_direct(
+    assignment_id: str,
+    request: AssignmentUpdateRequest,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
     """
-    Update a single assignment directly in the new collection.
+    Update a single assignment directly in the new collection. Requires editor or admin role.
     Logs the edit to the audit trail and recalculates daily summary.
     """
     # Validate ObjectId format (400 for invalid format)
@@ -1434,9 +1837,12 @@ async def update_assignment_direct(assignment_id: str, request: AssignmentUpdate
 
 
 @app.delete("/assignments/{assignment_id}", response_model=AssignmentDeleteResponse)
-async def delete_assignment_direct(assignment_id: str):
+async def delete_assignment_direct(
+    assignment_id: str,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
     """
-    Delete a single assignment from the new collection.
+    Delete a single assignment from the new collection. Requires editor or admin role.
     Logs the deletion to the audit trail and recalculates daily summary.
     """
     # Validate ObjectId format (400 for invalid format)
@@ -1501,6 +1907,7 @@ async def get_assignment_edits(
     end_date: str | None = None,
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    current_user: UserDoc = Depends(get_current_user),
 ):
     """
     Get audit trail of assignment edits.
@@ -1560,7 +1967,7 @@ async def get_assignment_edits(
 
 
 @app.get("/logs")
-def read_logs():
+async def read_logs(current_user: UserDoc = Depends(get_current_user)):
     log_path = os.path.join(os.path.dirname(__file__), "myapp.log")
     try:
         with open(log_path, "r") as logfile:
@@ -1571,7 +1978,7 @@ def read_logs():
 
 
 @app.get("/employees")
-async def get_employees():
+async def get_employees(current_user: UserDoc = Depends(get_current_user)):
     from datetime import date as date_type
 
     employees = await EmployeeDoc.find(EmployeeDoc.disabled == False).to_list()
@@ -1640,7 +2047,11 @@ class EmployeeAvailabilityUpdate(BaseModel):
 
 
 @app.put("/employees/{employee_name}/availability")
-async def update_employee_availability(employee_name: str, request: EmployeeAvailabilityUpdate):
+async def update_employee_availability(
+    employee_name: str,
+    request: EmployeeAvailabilityUpdate,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
     from db.models import AvailabilitySlot
 
     employee = await EmployeeDoc.find_one(EmployeeDoc.employee_name == employee_name)
@@ -1706,7 +2117,7 @@ def normalize_time(time_str: str) -> str:
 
 
 @app.get("/stores")
-async def get_stores():
+async def get_stores(current_user: UserDoc = Depends(get_current_user)):
     stores = await StoreDoc.find().to_list()
 
     if not stores:
@@ -1727,7 +2138,7 @@ async def get_stores():
 
 
 @app.get("/schedules")
-async def get_schedules():
+async def get_schedules(current_user: UserDoc = Depends(get_current_user)):
     employees = await EmployeeDoc.find(EmployeeDoc.disabled == False).to_list()
 
     if not employees:
@@ -1750,7 +2161,7 @@ VALID_SOLVER_TYPES = ["gurobi", "pulp", "ortools"]
 
 
 @app.get("/config")
-async def get_config():
+async def get_config(current_user: UserDoc = Depends(get_current_user)):
     config = await ConfigDoc.find_one()
 
     if not config:
@@ -1773,7 +2184,9 @@ async def update_config(
     min_shift_hours: float | None = None,
     max_daily_hours: float | None = None,
     solver_type: str | None = None,
+    current_user: UserDoc = Depends(require_editor_or_admin),
 ):
+    """Update solver configuration. Requires editor or admin role."""
     config = await ConfigDoc.find_one()
 
     if not config:
@@ -1816,7 +2229,11 @@ async def update_config(
 
 
 @app.post("/schedule/{schedule_id}/validate", response_model=ValidateChangeResponse)
-async def validate_change(schedule_id: str, request: ValidateChangeRequest):
+async def validate_change(
+    schedule_id: str,
+    request: ValidateChangeRequest,
+    current_user: UserDoc = Depends(get_current_user),
+):
     from beanie import PydanticObjectId
 
     try:
@@ -1853,7 +2270,11 @@ async def validate_change(schedule_id: str, request: ValidateChangeRequest):
 
 
 @app.patch("/schedule/{schedule_id}/assignment", response_model=ShiftUpdateResponse)
-async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
+async def update_assignment(
+    schedule_id: str,
+    request: ShiftUpdateRequest,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
     from beanie import PydanticObjectId
 
     try:
@@ -2078,7 +2499,11 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
 
 
 @app.post("/schedule/{schedule_id}/batch-update", response_model=BatchUpdateResponse)
-async def batch_update_assignments(schedule_id: str, request: BatchUpdateRequest):
+async def batch_update_assignments(
+    schedule_id: str,
+    request: BatchUpdateRequest,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
     from beanie import PydanticObjectId
 
     try:
@@ -2123,7 +2548,11 @@ async def batch_update_assignments(schedule_id: str, request: BatchUpdateRequest
 
 
 @app.patch("/schedule/{schedule_id}/lock", response_model=ToggleLockResponse)
-async def toggle_shift_lock(schedule_id: str, request: ToggleLockRequest):
+async def toggle_shift_lock(
+    schedule_id: str,
+    request: ToggleLockRequest,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
     from beanie import PydanticObjectId
 
     try:
@@ -2215,7 +2644,11 @@ class CreateStoreRequest(BaseModel):
 
 
 @app.delete("/schedule/{schedule_id}/shift", response_model=DeleteShiftResponse)
-async def delete_shift(schedule_id: str, request: DeleteShiftRequest):
+async def delete_shift(
+    schedule_id: str,
+    request: DeleteShiftRequest,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
     from beanie import PydanticObjectId
 
     try:
@@ -2324,7 +2757,11 @@ async def delete_shift(schedule_id: str, request: DeleteShiftRequest):
 
 
 @app.put("/stores/{store_name}")
-async def update_store(store_name: str, request: StoreUpdateRequest):
+async def update_store(
+    store_name: str,
+    request: StoreUpdateRequest,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
     store = await StoreDoc.find_one(StoreDoc.store_name == store_name)
 
     hours = [
@@ -2357,7 +2794,10 @@ async def update_store(store_name: str, request: StoreUpdateRequest):
 
 
 @app.post("/stores")
-async def create_store(request: CreateStoreRequest):
+async def create_store(
+    request: CreateStoreRequest,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
     existing = await StoreDoc.find_one(StoreDoc.store_name == request.store_name)
     if existing:
         raise HTTPException(status_code=400, detail="Store already exists")
@@ -2378,7 +2818,11 @@ async def create_store(request: CreateStoreRequest):
 
 
 @app.delete("/stores/{store_name}")
-async def delete_store(store_name: str):
+async def delete_store(
+    store_name: str,
+    current_user: UserDoc = Depends(require_admin),
+):
+    """Delete a store. Requires admin role."""
     store = await StoreDoc.find_one(StoreDoc.store_name == store_name)
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
@@ -2398,7 +2842,10 @@ class StaffingRequirementsUpdate(BaseModel):
 
 
 @app.get("/stores/{store_name}/staffing")
-async def get_store_staffing(store_name: str):
+async def get_store_staffing(
+    store_name: str,
+    current_user: UserDoc = Depends(get_current_user),
+):
     store = await StoreDoc.find_one(StoreDoc.store_name == store_name)
     if not store:
         return []
@@ -2414,7 +2861,11 @@ async def get_store_staffing(store_name: str):
 
 
 @app.put("/stores/{store_name}/staffing")
-async def update_store_staffing(store_name: str, request: StaffingRequirementsUpdate):
+async def update_store_staffing(
+    store_name: str,
+    request: StaffingRequirementsUpdate,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
     from db.models import StaffingRequirement
 
     store = await StoreDoc.find_one(StoreDoc.store_name == store_name)
@@ -2457,14 +2908,14 @@ US_STATES = {
 
 
 @app.get("/compliance/states")
-async def get_us_states():
-    """Get list of US states for compliance rule selection."""
+async def get_us_states(current_user: UserDoc = Depends(get_current_user)):
+    """Get list of US states for compliance rule selection. Requires authentication."""
     return [{"code": code, "name": name} for code, name in sorted(US_STATES.items(), key=lambda x: x[1])]
 
 
 @app.get("/compliance/rules")
-async def get_compliance_rules():
-    """Get all compliance rules."""
+async def get_compliance_rules(current_user: UserDoc = Depends(get_current_user)):
+    """Get all compliance rules. Requires authentication."""
     rules = await ComplianceRuleDoc.find().to_list()
     return [
         {
@@ -2491,8 +2942,11 @@ async def get_compliance_rules():
 
 
 @app.get("/compliance/rules/{jurisdiction}")
-async def get_compliance_rule(jurisdiction: str):
-    """Get compliance rules for a specific jurisdiction."""
+async def get_compliance_rule(
+    jurisdiction: str,
+    current_user: UserDoc = Depends(get_current_user),
+):
+    """Get compliance rules for a specific jurisdiction. Requires authentication."""
     rule = await ComplianceRuleDoc.find_one(ComplianceRuleDoc.jurisdiction == jurisdiction.upper())
     if not rule:
         raise HTTPException(status_code=404, detail=f"No rules found for jurisdiction: {jurisdiction}")
@@ -2537,8 +2991,12 @@ class ComplianceRuleUpdate(BaseModel):
 
 
 @app.post("/compliance/rules/{jurisdiction}")
-async def create_or_update_compliance_rule(jurisdiction: str, request: ComplianceRuleUpdate):
-    """Create or update compliance rules for a jurisdiction."""
+async def create_or_update_compliance_rule(
+    jurisdiction: str,
+    request: ComplianceRuleUpdate,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
+    """Create or update compliance rules for a jurisdiction. Requires editor or admin role."""
     jurisdiction = jurisdiction.upper()
 
     rule = await ComplianceRuleDoc.find_one(ComplianceRuleDoc.jurisdiction == jurisdiction)
@@ -2589,8 +3047,11 @@ async def create_or_update_compliance_rule(jurisdiction: str, request: Complianc
 
 
 @app.delete("/compliance/rules/{jurisdiction}")
-async def delete_compliance_rule(jurisdiction: str):
-    """Delete compliance rules for a jurisdiction."""
+async def delete_compliance_rule(
+    jurisdiction: str,
+    current_user: UserDoc = Depends(require_admin),
+):
+    """Delete compliance rules for a jurisdiction. Requires admin role."""
     rule = await ComplianceRuleDoc.find_one(ComplianceRuleDoc.jurisdiction == jurisdiction.upper())
     if not rule:
         raise HTTPException(status_code=404, detail=f"No rules found for jurisdiction: {jurisdiction}")
@@ -2599,8 +3060,11 @@ async def delete_compliance_rule(jurisdiction: str):
 
 
 @app.post("/compliance/ai/research/{state}")
-async def research_state_compliance(state: str):
-    """Use AI to research labor laws for a state. Returns suggestions for review."""
+async def research_state_compliance(
+    state: str,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
+    """Use AI to research labor laws for a state. Returns suggestions for review. Requires editor or admin role."""
     state = state.upper()
     if state not in US_STATES and state != "DEFAULT":
         raise HTTPException(status_code=400, detail=f"Invalid state code: {state}")
@@ -2681,8 +3145,12 @@ class ApproveAISuggestionRequest(BaseModel):
 
 
 @app.post("/compliance/ai/approve")
-async def approve_ai_suggestion(request: ApproveAISuggestionRequest, req: Request):
-    """Manager approves AI suggestion, saving it as active rules with audit trail."""
+async def approve_ai_suggestion(
+    request: ApproveAISuggestionRequest,
+    req: Request,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
+    """Manager approves AI suggestion, saving it as active rules with audit trail. Requires editor or admin role."""
     from db.models import ComplianceAuditDoc, ComplianceRuleEdit
 
     jurisdiction = request.jurisdiction.upper()
@@ -2801,6 +3269,7 @@ async def get_compliance_audit_history(
     jurisdiction: str | None = None,
     limit: int = 50,
     skip: int = 0,
+    current_user: UserDoc = Depends(get_current_user),
 ):
     """Get compliance rule audit trail for accountability and legal protection."""
     from db.models import ComplianceAuditDoc
@@ -2841,8 +3310,11 @@ async def get_compliance_audit_history(
 
 
 @app.get("/compliance/audit/{audit_id}")
-async def get_compliance_audit_detail(audit_id: str):
-    """Get detailed audit record by ID."""
+async def get_compliance_audit_detail(
+    audit_id: str,
+    current_user: UserDoc = Depends(get_current_user),
+):
+    """Get detailed audit record by ID. Requires authentication."""
     from db.models import ComplianceAuditDoc
     from beanie import PydanticObjectId
 
@@ -2883,8 +3355,11 @@ async def get_compliance_audit_detail(audit_id: str):
 
 
 @app.post("/compliance/validate/{schedule_id}")
-async def validate_schedule_compliance_endpoint(schedule_id: str):
-    """Validate a schedule for compliance violations."""
+async def validate_schedule_compliance_endpoint(
+    schedule_id: str,
+    current_user: UserDoc = Depends(get_current_user),
+):
+    """Validate a schedule for compliance violations. Requires authentication."""
     from beanie import PydanticObjectId
 
     try:
@@ -2911,8 +3386,12 @@ class EmployeeComplianceUpdate(BaseModel):
 
 
 @app.patch("/employees/{employee_name}/compliance")
-async def update_employee_compliance(employee_name: str, request: EmployeeComplianceUpdate):
-    """Update compliance-related fields for an employee."""
+async def update_employee_compliance(
+    employee_name: str,
+    request: EmployeeComplianceUpdate,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
+    """Update compliance-related fields for an employee. Requires editor or admin role."""
     employee = await EmployeeDoc.find_one(EmployeeDoc.employee_name == employee_name)
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -2942,8 +3421,8 @@ class ComplianceConfigUpdate(BaseModel):
 
 
 @app.get("/compliance/config")
-async def get_compliance_config():
-    """Get compliance configuration."""
+async def get_compliance_config(current_user: UserDoc = Depends(get_current_user)):
+    """Get compliance configuration. Requires authentication."""
     config = await ConfigDoc.find_one()
     if not config:
         return {
@@ -2965,8 +3444,11 @@ async def get_compliance_config():
 
 
 @app.post("/compliance/config")
-async def update_compliance_config(request: ComplianceConfigUpdate):
-    """Update compliance configuration."""
+async def update_compliance_config(
+    request: ComplianceConfigUpdate,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
+    """Update compliance configuration. Requires editor or admin role."""
     config = await ConfigDoc.find_one()
 
     if not config:
@@ -3001,8 +3483,12 @@ async def update_compliance_config(request: ComplianceConfigUpdate):
 
 
 @app.put("/stores/{store_name}/jurisdiction")
-async def update_store_jurisdiction(store_name: str, jurisdiction: str):
-    """Update the jurisdiction for a store."""
+async def update_store_jurisdiction(
+    store_name: str,
+    jurisdiction: str,
+    current_user: UserDoc = Depends(require_editor_or_admin),
+):
+    """Update the jurisdiction for a store. Requires editor or admin role."""
     store = await StoreDoc.find_one(StoreDoc.store_name == store_name)
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")

@@ -176,22 +176,8 @@ def test_openapi_endpoint_accessible(client):
     assert data["info"]["title"] == "shiftScheduler"
 
 
-def test_solver_run_requires_pass_key(client):
-    """Test that /solver/run endpoint requires pass_key parameter."""
-    response = client.get("/solver/run")
-
-    assert response.status_code == 422  # Validation error
-
-
-def test_solver_run_rejects_invalid_pass_key(client):
-    """Test that /solver/run rejects invalid pass_key."""
-    response = client.get("/solver/run?pass_key=wrong")
-
-    assert response.status_code == 422
-
-
-def test_solver_run_accepts_valid_pass_key(client, mock_dependencies, mock_db):
-    """Test that /solver/run accepts valid pass_key."""
+def test_solver_run_returns_schedule(client, mock_dependencies, mock_db):
+    """Test that /solver/run returns a schedule result."""
     from schemas import WeeklyScheduleResult
     from datetime import datetime
 
@@ -228,12 +214,10 @@ def test_solver_run_accepts_valid_pass_key(client, mock_dependencies, mock_db):
     mock_db["DailySummaryDoc"].find = MagicMock(return_value=_create_find_chain_mock([]))
 
     with patch("app.main") as mock_main, patch(
-        "app.SOLVER_PASS_KEY", "testkey"
-    ), patch("app._persist_schedule_result", new_callable=AsyncMock), patch(
-        "app._run_compliance_validation", new_callable=AsyncMock
-    ):
+        "app._persist_schedule_result", new_callable=AsyncMock
+    ), patch("app._run_compliance_validation", new_callable=AsyncMock):
         mock_main.return_value = mock_result
-        response = client.get("/solver/run?pass_key=testkey&start_date=2024-01-15&end_date=2024-01-21")
+        response = client.get("/solver/run?start_date=2024-01-15&end_date=2024-01-21")
 
         assert response.status_code == 200
         data = response.json()
@@ -274,20 +258,6 @@ def test_cors_headers_present(client):
 
     # CORS middleware should allow the request
     assert response.status_code in [200, 400, 422]
-
-
-def test_sync_all_requires_pass_key(client):
-    """Test that /sync/all endpoint requires pass_key parameter."""
-    response = client.post("/sync/all")
-
-    assert response.status_code == 422  # Validation error
-
-
-def test_sync_all_rejects_invalid_pass_key(client):
-    """Test that /sync/all rejects invalid pass_key."""
-    response = client.post("/sync/all?pass_key=wrong")
-
-    assert response.status_code == 422
 
 
 def test_schedule_history_returns_empty_list(client, mock_db):

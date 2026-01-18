@@ -137,7 +137,7 @@ function ScheduleContent() {
     const end = endDate || selectedEndDate;
 
     try {
-      const result = await api.runSolver("vero", start, end);
+      const result = await api.runSolver(start, end);
       setScheduleResult(result);
       setStatus("success");
       setMessage("Solver completed successfully!");

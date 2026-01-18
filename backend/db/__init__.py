@@ -17,6 +17,9 @@ from .models import (
     AssignmentDoc,
     DailySummaryDoc,
     AssignmentEditDoc,
+    # Authentication models
+    UserDoc,
+    EmailWhitelistDoc,
 )
 from .sync import sync_all_from_sheets
 
@@ -41,4 +44,7 @@ __all__ = [
     "AssignmentDoc",
     "DailySummaryDoc",
     "AssignmentEditDoc",
+    # Authentication models
+    "UserDoc",
+    "EmailWhitelistDoc",
 ]
