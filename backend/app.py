@@ -807,6 +807,8 @@ async def validate_change(schedule_id: str, request: ValidateChangeRequest):
                 start_time=p.start_time,
                 end_time=p.end_time,
                 scheduled=p.scheduled,
+                is_locked=getattr(p, 'is_locked', False),
+                is_break=getattr(p, 'is_break', False),
             )
             for p in assignment.periods
         ]
@@ -820,6 +822,7 @@ async def validate_change(schedule_id: str, request: ValidateChangeRequest):
                 shift_start=assignment.shift_start,
                 shift_end=assignment.shift_end,
                 is_short_shift=assignment.is_short_shift,
+                is_locked=getattr(assignment, 'is_locked', False),
             )
         )
 
@@ -860,6 +863,8 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
                 start_time=p.start_time,
                 end_time=p.end_time,
                 scheduled=p.scheduled,
+                is_locked=getattr(p, 'is_locked', False),
+                is_break=getattr(p, 'is_break', False),
             )
             for p in assignment.periods
         ]
@@ -873,6 +878,7 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
                 shift_start=assignment.shift_start,
                 shift_end=assignment.shift_end,
                 is_short_shift=assignment.is_short_shift,
+                is_locked=getattr(assignment, 'is_locked', False),
             )
         )
 
@@ -998,6 +1004,8 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
                 start_time=p.start_time,
                 end_time=p.end_time,
                 scheduled=p.scheduled,
+                is_locked=getattr(p, 'is_locked', False),
+                is_break=getattr(p, 'is_break', False),
             )
             for p in schedule.periods
         ]
@@ -1010,6 +1018,7 @@ async def update_assignment(schedule_id: str, request: ShiftUpdateRequest):
                 shift_start=schedule.shift_start,
                 shift_end=schedule.shift_end,
                 is_short_shift=schedule.is_short_shift,
+                is_locked=getattr(schedule, 'is_locked', False),
                 periods=periods,
             )
         )
@@ -1229,7 +1238,8 @@ async def delete_shift(schedule_id: str, request: DeleteShiftRequest):
                 start_time=p.start_time,
                 end_time=p.end_time,
                 scheduled=p.scheduled,
-                is_locked=p.is_locked,
+                is_locked=getattr(p, 'is_locked', False),
+                is_break=getattr(p, 'is_break', False),
             )
             for p in a.periods
         ]
@@ -1237,12 +1247,13 @@ async def delete_shift(schedule_id: str, request: DeleteShiftRequest):
             EDS(
                 employee_name=a.employee_name,
                 day_of_week=a.day_of_week,
+                date=getattr(a, 'date', None),
                 periods=periods,
                 total_hours=a.total_hours,
                 shift_start=a.shift_start,
                 shift_end=a.shift_end,
                 is_short_shift=a.is_short_shift,
-                is_locked=a.is_locked,
+                is_locked=getattr(a, 'is_locked', False),
             )
         )
 
