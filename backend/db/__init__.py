@@ -20,6 +20,7 @@ from .models import (
     # Authentication models
     UserDoc,
     EmailWhitelistDoc,
+    OAuthStateDoc,
 )
 from .sync import sync_all_from_sheets
 
@@ -47,4 +48,5 @@ __all__ = [
     # Authentication models
     "UserDoc",
     "EmailWhitelistDoc",
+    "OAuthStateDoc",
 ]

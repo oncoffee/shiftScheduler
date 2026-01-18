@@ -1,4 +1,3 @@
-import hashlib
 import logging
 import os
 import re
@@ -14,6 +13,9 @@ from dotenv import load_dotenv
 from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo import UpdateOne
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from utils import utc_now
 
@@ -74,6 +76,7 @@ from db import (
     # Authentication models
     UserDoc,
     EmailWhitelistDoc,
+    OAuthStateDoc,
 )
 from auth import (
     GOOGLE_CLIENT_ID,
@@ -88,6 +91,8 @@ from auth import (
     get_current_user,
     require_admin,
     require_editor_or_admin,
+    hash_token,
+    verify_token,
 )
 from db.database import close_db, get_database
 from db.models import StoreHours
@@ -156,7 +161,10 @@ async def get_staffing_requirements() -> list[dict] | None:
     return None
 
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="shiftScheduler", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -165,21 +173,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# ============================================================================
-# OAuth State Storage (In-memory, should be Redis in production)
-# ============================================================================
-
-_oauth_states: dict[str, datetime] = {}
-
-
-def _cleanup_expired_states():
-    """Remove OAuth states older than 10 minutes."""
-    now = datetime.utcnow()
-    expired = [k for k, v in _oauth_states.items() if (now - v).total_seconds() > 600]
-    for k in expired:
-        del _oauth_states[k]
 
 
 # ============================================================================
@@ -206,21 +199,10 @@ class AuthResponse(BaseModel):
 
 
 @app.get("/auth/login")
-async def get_login_url(redirect_uri: str = "/"):
-    """
-    Generate Google OAuth login URL.
-
-    Args:
-        redirect_uri: Where to redirect after successful login (frontend path)
-
-    Returns:
-        Dictionary with auth_url to redirect user to
-    """
-    _cleanup_expired_states()
-
-    # Include redirect_uri in state so we can use it after callback
+@limiter.limit("10/minute")
+async def get_login_url(request: Request, redirect_uri: str = "/"):
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = datetime.utcnow()
+    await OAuthStateDoc(state=state).insert()
 
     params = {
         "client_id": GOOGLE_CLIENT_ID,
@@ -236,17 +218,12 @@ async def get_login_url(redirect_uri: str = "/"):
 
 
 @app.get("/auth/callback")
-async def oauth_callback(code: str, state: str):
-    """
-    Handle Google OAuth callback.
-
-    This endpoint receives the authorization code from Google,
-    exchanges it for tokens, validates the user, and returns JWT tokens.
-    """
-    # Verify state to prevent CSRF
-    if state not in _oauth_states:
+@limiter.limit("10/minute")
+async def oauth_callback(request: Request, code: str, state: str):
+    state_doc = await OAuthStateDoc.find_one(OAuthStateDoc.state == state)
+    if not state_doc:
         raise HTTPException(status_code=400, detail="Invalid or expired state")
-    del _oauth_states[state]
+    await state_doc.delete()
 
     # Exchange code for tokens
     tokens = await exchange_code_for_tokens(code)
@@ -296,8 +273,7 @@ async def oauth_callback(code: str, state: str):
     access_token = create_access_token(email, str(user.id), user.role)
     refresh_token, expires_at = create_refresh_token(email)
 
-    # Store refresh token hash
-    user.refresh_token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
+    user.refresh_token_hash = hash_token(refresh_token)
     user.refresh_token_expires_at = expires_at
     await user.save()
 
@@ -313,7 +289,8 @@ async def oauth_callback(code: str, state: str):
 
 
 @app.post("/auth/refresh")
-async def refresh_access_token(request: RefreshTokenRequest):
+@limiter.limit("30/minute")
+async def refresh_access_token(request: Request, token_request: RefreshTokenRequest):
     """
     Refresh access token using refresh token.
 
@@ -326,7 +303,7 @@ async def refresh_access_token(request: RefreshTokenRequest):
     import jwt as pyjwt
 
     try:
-        payload = decode_token(request.refresh_token)
+        payload = decode_token(token_request.refresh_token)
         if payload.get("type") != "refresh":
             raise HTTPException(status_code=401, detail="Invalid token type")
 
@@ -338,9 +315,7 @@ async def refresh_access_token(request: RefreshTokenRequest):
         if not user or not user.refresh_token_hash:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-        # Verify refresh token hash
-        token_hash = hashlib.sha256(request.refresh_token.encode()).hexdigest()
-        if token_hash != user.refresh_token_hash:
+        if not verify_token(token_request.refresh_token, user.refresh_token_hash):
             raise HTTPException(status_code=401, detail="Invalid refresh token")
 
         # Generate new access token

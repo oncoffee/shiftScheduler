@@ -425,3 +425,16 @@ class EmailWhitelistDoc(Document):
         indexes = [
             IndexModel([("email", 1)], unique=True),
         ]
+
+
+class OAuthStateDoc(Document):
+    """OAuth state tokens for CSRF protection with automatic TTL expiration."""
+    state: Indexed(str, unique=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+    class Settings:
+        name = "oauth_states"
+        indexes = [
+            IndexModel([("state", 1)], unique=True),
+            IndexModel([("created_at", 1)], expireAfterSeconds=600),
+        ]
