@@ -1,10 +1,11 @@
 import numpy as np
 import pandas as pd
-from datetime import timedelta, datetime
-from data_import import *
+from datetime import time, timedelta, datetime
+from dateutil import parser
+from data_import import stores, schedule
 
 
-def create_time_periods_df(start_time, end_time):
+def create_time_periods_df(start_time: time, end_time: time) -> pd.DataFrame:
     interval = timedelta(minutes=30)
     start_dt = datetime.combine(datetime.today(), start_time)
     end_dt = datetime.combine(datetime.today(), end_time)
@@ -20,13 +21,13 @@ def create_time_periods_df(start_time, end_time):
     return pd.DataFrame(periods)
 
 
-def putting_store_time_in_df(dow, start, end):
+def putting_store_time_in_df(dow: str, start: time, end: time) -> pd.DataFrame:
     df = create_time_periods_df(start, end)
     df['day_of_week'] = dow
     return df
 
 
-def creating_employee_df(employee_name, dow, start, end):
+def creating_employee_df(employee_name: str, dow: str, start: str, end: str) -> pd.DataFrame:
     start_time = parser.parse(start).time()
     end_time = parser.parse(end).time()
     df = create_time_periods_df(start_time, end_time)

@@ -8,7 +8,6 @@ except (ImportError, AttributeError):
     WorksheetNotFound = Exception
 from pydantic import BaseModel
 from dateutil import parser
-from pprint import pprint
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,19 +19,22 @@ gc = gspread.service_account(service_account_path)
 book = gc.open_by_key(book_key)
 
 
-def fix_column_name(name: str):
+from datetime import time as time_type
+from typing import Any
+
+
+def fix_column_name(name: str) -> str:
     return name.strip().lower().replace(" ", "_")
 
 
-def pre_row_for_parsing(row: dict):
+def pre_row_for_parsing(row: dict[str, Any]) -> dict[str, Any]:
     return {fix_column_name(k): v for k, v in row.items()}
 
 
-def get_time_periods(start, end, interval_in_minutes=30):
-    interval = interval_in_minutes
-    delta = datetime.datetime.combine(datetime.date.today(), end) - \
-            datetime.datetime.combine(datetime.date.today(), start)
-    interval_count = int(delta.total_seconds() / interval.total_seconds())
+def get_time_periods(start: time_type, end: time_type, interval_in_minutes: int = 30) -> int:
+    from datetime import date
+    delta = datetime.combine(date.today(), end) - datetime.combine(date.today(), start)
+    interval_count = int(delta.total_seconds() / (interval_in_minutes * 60))
     return interval_count
 
 
@@ -65,34 +67,35 @@ class Config(BaseModel):
     solver_type: str = "gurobi"
 
 
-def load_data():
-    """Load data from Google Sheets. Call this to refresh data."""
+def load_data() -> dict:
+    """Load data from Google Sheets and update module-level cache.
+
+    Returns:
+        dict with keys: stores, schedule, employee, config, rates,
+        min_hrs_pr_wk, min_hrs, max_hrs
+    """
     global stores, schedule, employee, rates, min_hrs_pr_wk, min_hrs, max_hrs, config
 
     stores = [
-        Store.parse_obj(pre_row_for_parsing(x))
+        Store.model_validate(pre_row_for_parsing(x))
         for x in book.worksheet("Store").get_all_records()
         if not x.get("Disabled")
     ]
 
-    # Load enabled employees first
     employee = [
-        Employee.parse_obj(pre_row_for_parsing(x))
+        Employee.model_validate(pre_row_for_parsing(x))
         for x in book.worksheet("Employee").get_all_records()
         if not x.get("Disabled")
     ]
 
-    # Get set of enabled employee names
     enabled_employees = {e.employee_name for e in employee}
 
-    # Filter schedule to only include enabled employees
     schedule = [
-        EmployeeSchedule.parse_obj(pre_row_for_parsing(x))
+        EmployeeSchedule.model_validate(pre_row_for_parsing(x))
         for x in book.worksheet("EmployeeSchedule").get_all_records()
         if not x.get("Disabled") and x.get("Employee name") in enabled_employees
     ]
 
-    # Load config from Config tab
     try:
         config_rows = book.worksheet("Config").get_all_records()
         config_dict = {row.get("Setting"): row.get("Value") for row in config_rows if row.get("Setting")}
@@ -115,6 +118,17 @@ def load_data():
         min_hrs_pr_wk[e.employee_name] = e.minimum_hours_per_week
         min_hrs[e.employee_name] = e.minimum_hours
         max_hrs[e.employee_name] = e.maximum_hours
+
+    return {
+        "stores": stores,
+        "schedule": schedule,
+        "employee": employee,
+        "config": config,
+        "rates": rates,
+        "min_hrs_pr_wk": min_hrs_pr_wk,
+        "min_hrs": min_hrs,
+        "max_hrs": max_hrs,
+    }
 
 
 # Initialize on import

@@ -26,8 +26,13 @@ from compliance.engine import apply_minor_availability_filter, apply_rest_constr
 
 DAY_OF_WEEK_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
+DEFAULT_STAFFING_WEEKEND = [2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+DEFAULT_STAFFING_WEEKDAY = [2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+PERIOD_DURATION_MINUTES = 30
+MINOR_AGE_THRESHOLD = 18
 
-def get_employee_minor_status_sync(minor_age_threshold: int = 18) -> dict[str, bool]:
+
+def get_employee_minor_status_sync(minor_age_threshold: int = MINOR_AGE_THRESHOLD) -> dict[str, bool]:
     """
     Synchronously get minor status for all employees.
     Falls back to checking data_import if database is unavailable.
@@ -252,8 +257,8 @@ def get_minimum_workers(
 ) -> list[int]:
     if staffing_requirements is None:
         if day_of_week in ('Saturday', 'Sunday'):
-            return [2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
-        return [2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2]
+            return DEFAULT_STAFFING_WEEKEND.copy()
+        return DEFAULT_STAFFING_WEEKDAY.copy()
 
     day_type = "weekend" if day_of_week in ('Saturday', 'Sunday') else "weekday"
     relevant_reqs = [r for r in staffing_requirements if r.get("day_type") == day_type]
@@ -263,12 +268,12 @@ def get_minimum_workers(
     if store_end_mins <= store_start_mins:
         store_end_mins = 24 * 60
 
-    num_periods = (store_end_mins - store_start_mins) // 30
+    num_periods = (store_end_mins - store_start_mins) // PERIOD_DURATION_MINUTES
     minimum_workers = []
 
     for period_idx in range(num_periods):
-        period_start = store_start_mins + (period_idx * 30)
-        period_end = period_start + 30
+        period_start = store_start_mins + (period_idx * PERIOD_DURATION_MINUTES)
+        period_end = period_start + PERIOD_DURATION_MINUTES
 
         min_staff = default_min
         for req in relevant_reqs:
